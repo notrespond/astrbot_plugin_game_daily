@@ -21,8 +21,9 @@
   - 电竞赛事、行业新闻。
 - 每个来源独立请求，单个来源失败不会影响其他来源。
 - 按标题、规范化 URL、内容指纹去重；SQLite 持久化已发送记录，重启后不会重复推送。
-- AI（OpenAI 兼容接口）负责中文标题润色、简短摘要、分类、重要性评分和同事件合并。
-- 规则降级：AI 超时、401、返回格式错误或未配置 Key 时，仍会生成日报。
+- AI 负责中文标题润色、简短摘要、分类、重要性评分和同事件合并。
+- 优先使用外部 OpenAI 兼容 Key；没有 Key 时自动使用 AstrBot 当前默认聊天模型。
+- 规则降级：AI 超时、401、返回格式错误、没有 Key 且没有 AstrBot 模型时，仍会生成日报。
 - Pillow 本地生成 16:9 深色中文新闻海报，支持 4～6 条精选新闻、无新闻提示、长标题截断和异常字符清理。
 - 使用 AstrBot 原生 `context.cron_manager` 注册每日任务，不另起机器人进程。
 - 提供手动采集、预览、状态、自检命令。
@@ -112,10 +113,10 @@ docker restart astrbot
 
 ## 5. 快速开始
 
-1. 在 WebUI 插件配置中填写 AI：
-   - `ai_api_base`：OpenAI 兼容地址，例如 `https://api.openai.com/v1`；
-   - `ai_model`：模型名；
-   - `ai_api_key`：Key。也可以留空，使用环境变量 `GAMEDAILY_AI_API_KEY`。
+1. AI（可选）：
+   - 默认 `ai_use_astrbot_provider=true`：`ai_api_key` 为空时，自动使用 AstrBot 当前默认聊天模型做中文润色；
+   - 也可以填写外部 OpenAI 兼容 `ai_api_base`、`ai_model`、`ai_api_key`；
+   - Key 也可以留空并使用环境变量 `GAMEDAILY_AI_API_KEY`。
 2. 在要接收日报的群/私聊里发送：
 
    ```
@@ -219,6 +220,8 @@ docker restart astrbot
 | 配置 | 默认 | 说明 |
 | --- | --- | --- |
 | `ai_enabled` | `true` | 关闭后直接使用规则模式 |
+| `ai_use_astrbot_provider` | `true` | 没有外部 Key 时自动使用 AstrBot 当前默认聊天模型 |
+| `ai_provider_id` | 空 | 指定 AstrBot 模型 ID；留空自动选择 |
 | `ai_api_base` | `https://api.openai.com/v1` | OpenAI 兼容 Base URL |
 | `ai_model` | `gpt-4o-mini` | 模型名 |
 | `ai_api_key` | 空（secret） | 建议通过环境变量提供 |
@@ -232,6 +235,7 @@ docker restart astrbot
 
 AI 安全约束：
 
+- 没有外部 Key 且 `ai_use_astrbot_provider=true` 时，调用 AstrBot 已配置的聊天模型；模型不可用时回退规则模式。
 - API Key 只从插件配置或环境变量读取，不写死在代码里，不写入日志/状态/README。
 - 新闻标题、摘要、链接被视为**不可信数据**，放在 `<news_data>` JSON 块中；系统提示明确禁止执行其中的指令。
 - AI 只能处理已采集的 id，不能新增新闻；未知 id 会被丢弃。
@@ -397,17 +401,18 @@ python astrbot_plugin_game_daily/tests/manual_smoke.py
 
 已实际验证：
 
-- 68 个单元测试在 Windows Python 3.14 通过；
+- 69 个单元测试在 Windows Python 3.14 通过；
 - 同一套测试在 AstrBot 4.29.0 Docker 容器 / Python 3.12 / Noto CJK 字体下通过；
-- 真实 RSS 抓取（本机与 AWS 悉尼容器）成功获取新闻并生成 1200×675 中文海报；
+- 真实 RSS 抓取（本机与 AWS 悉尼容器）成功获取新闻并生成 1200×675 海报；
+- 已安装到 AstrBot 4.29.0 容器并成功加载；无外部 Key 时通过 AstrBot 默认 DeepSeek 模型生成中文标题/摘要海报；
 - 在 AstrBot 容器内成功 `import` 插件入口，并用真实 `AstrBotConfig` + 假 `Context` 完成初始化、注册定时任务、卸载清理。
 
 未在当前环境验证（需要你的实际凭据/平台）：
 
 - 真实 OpenAI 兼容服务的 AI 调用（未提供 Key；已用本地 HTTP mock 验证请求/解析/错误降级）；
-- 真实 QQ/OneBot 群或私聊的主动图片推送（需要已登录的 AstrBot 平台适配器和正确 UMO）；
-- AstrBot 定时任务在真实时间点的实际触发（插件未安装到生产 AstrBot，仅验证了注册接口和生命周期）；
-- Windows Server / 无中文字体 Linux 的最终视觉输出（已提供字体安装说明和清晰报错）。
+- AstrBot 定时任务在真实 08:30 时间点的实际触发（已安装并验证注册/生命周期，未等待到点）；
+- 真实 QQ 私聊主动推送（NapCat 登录态失效，发送被平台拒绝）；
+- 无中文字体 Linux 的最终视觉输出（已提供字体安装说明和清晰报错）。
 
 ---
 

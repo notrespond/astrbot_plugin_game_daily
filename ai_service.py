@@ -133,6 +133,17 @@ class AIService:
         self.config = config
         self.log = logger or log
         self.last_error = ""
+        self._provider_chat = None
+
+    def set_provider_chat(self, callback) -> None:
+        """Use AstrBot's configured model when no external API key exists.
+
+        ``callback`` is an async callable receiving ``messages`` and returning
+        the assistant text.  It is supplied by ``main.py`` so this module stays
+        independent of AstrBot imports.
+        """
+
+        self._provider_chat = callback
 
     @property
     def available(self) -> bool:
@@ -278,6 +289,21 @@ class AIService:
         max_tokens: int = 3000,
         temperature: float = 0.2,
     ) -> str:
+        if not self.config.ai_api_key:
+            if self._provider_chat is not None:
+                try:
+                    raw = await self._provider_chat(messages)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    raise AIError(
+                        f"AstrBot 模型调用失败: {type(exc).__name__}: {exc}"
+                    ) from exc
+                if isinstance(raw, str) and raw.strip():
+                    return raw.strip()
+                raise AIError("AstrBot 模型返回空内容")
+            raise AIError("未配置 AI API Key，也没有可用的 AstrBot 模型")
+
         payload: dict[str, Any] = {
             "model": self.config.ai_model,
             "messages": messages,
@@ -343,6 +369,8 @@ class AIService:
         if not self.available:
             if not self.config.ai_enabled:
                 return False, "AI 未启用"
+            if self.config.ai_use_astrbot_provider and not self.config.ai_provider_available:
+                return False, "没有可用的 AstrBot 聊天模型"
             if not self.config.ai_api_key:
                 return False, "未配置 API Key"
             return False, "AI 配置不完整"

@@ -78,6 +78,8 @@ class GameDailyPlugin(Star):
             )
         self.fetcher = NewsFetcher(self.cfg, self.logger)
         self.ai = AIService(self.cfg, self.logger)
+        self.ai.set_provider_chat(self._astrbot_provider_chat)
+        self._refresh_provider_availability()
         self.poster = PosterRenderer(self.cfg, self.logger)
         self.service = DailyReportService(
             self.cfg,
@@ -110,6 +112,50 @@ class GameDailyPlugin(Star):
             self.cfg.poster_height,
         )
 
+    def _refresh_provider_availability(self) -> None:
+        if not self.cfg.ai_use_astrbot_provider:
+            self.cfg.ai_provider_available = False
+            return
+        try:
+            self.cfg.ai_provider_available = bool(self.context.get_all_providers())
+        except Exception:
+            self.cfg.ai_provider_available = False
+            self.logger.warning(
+                "检测 AstrBot 聊天模型失败，将使用规则模式", exc_info=True
+            )
+
+    async def _astrbot_provider_chat(self, messages: list[dict]) -> str:
+        """Use AstrBot's configured chat model when no external Key exists."""
+
+        provider = None
+        if self.cfg.ai_provider_id:
+            provider = self.context.get_provider_by_id(self.cfg.ai_provider_id)
+            if provider is None:
+                self.logger.warning(
+                    "配置的 AstrBot 模型 %s 不存在，改用当前默认模型",
+                    self.cfg.ai_provider_id,
+                )
+        if provider is None:
+            provider = await self.context.get_using_provider_async()
+        if provider is None:
+            raise RuntimeError("AstrBot 没有可用的聊天模型")
+        system_prompt = "\n\n".join(
+            str(message.get("content", ""))
+            for message in messages
+            if message.get("role") == "system"
+        )
+        prompt = "\n\n".join(
+            str(message.get("content", ""))
+            for message in messages
+            if message.get("role") != "system"
+        )
+        response = await self.context.llm_generate(
+            chat_provider_id=provider.meta().id,
+            prompt=prompt,
+            system_prompt=system_prompt,
+        )
+        return response.completion_text or ""
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -118,6 +164,7 @@ class GameDailyPlugin(Star):
             if self._initialized:
                 return
             self._initialized = True
+        self._refresh_provider_availability()
         try:
             await self.scheduler.start()
         except Exception:
@@ -129,6 +176,12 @@ class GameDailyPlugin(Star):
 
     @filter.on_astrbot_loaded()
     async def _on_astrbot_loaded(self) -> None:
+        self._refresh_provider_availability()
+        self.logger.info(
+            "AstrBot 聊天模型可用：%s（AI 模式：%s）",
+            self.cfg.ai_provider_available,
+            "on" if self.cfg.ai_available else "fallback",
+        )
         # setTimeout-like retry for environments where initialize() ran before
         # the core cron manager was ready.
         if not self.scheduler.status().get("registered"):

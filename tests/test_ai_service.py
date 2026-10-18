@@ -158,6 +158,37 @@ class AIServiceTests(unittest.TestCase):
             self.assertTrue(ok)
             self.assertIn("test-model", message)
 
+    def test_astrbot_provider_when_no_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = ai_config(Path(tmp), ai_api_key="")
+            cfg.ai_provider_available = True
+            ai = AIService(cfg)
+            seen = []
+
+            async def provider_chat(messages):
+                seen.append(messages)
+                return json.dumps(
+                    {
+                        "items": [
+                            {
+                                "id": 1,
+                                "title": "AstrBot 模型中文标题",
+                                "summary": "由 AstrBot 模型生成的中文摘要。",
+                                "category": "更新",
+                                "importance": 76,
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                )
+
+            ai.set_provider_chat(provider_chat)
+            self.assertTrue(ai.available)
+            result = self._run(ai.enhance([make_item(1)]))
+            self.assertTrue(result.used)
+            self.assertEqual(result.items[1].title, "AstrBot 模型中文标题")
+            self.assertIn("不可信", seen[0][0]["content"])
+
     @staticmethod
     def _run(coro):
         import asyncio

@@ -223,6 +223,18 @@
     "hint": "关闭或 API 不可用时自动使用规则模式，不会中断日报。",
     "default": true
   },
+  "ai_use_astrbot_provider": {
+    "description": "没有外部 Key 时使用 AstrBot 模型",
+    "type": "bool",
+    "hint": "开启后，如果 ai_api_key 为空，将自动使用 AstrBot 当前默认聊天模型做中文摘要；失败仍回退规则模式。",
+    "default": true
+  },
+  "ai_provider_id": {
+    "description": "指定 AstrBot 模型 ID（可选）",
+    "type": "string",
+    "hint": "留空使用当前默认聊天模型；填写时请使用 AstrBot 中实际的模型提供商 ID。仅在使用 AstrBot 模型时生效。",
+    "default": ""
+  },
   "ai_api_base": {
     "description": "AI API Base URL",
     "type": "string",

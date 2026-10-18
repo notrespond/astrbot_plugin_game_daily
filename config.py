@@ -282,6 +282,9 @@ class PluginConfig:
     disabled_sources: list[str] = field(default_factory=list)
     rss_sources: list[RSSSourceConfig] = field(default_factory=list)
     ai_enabled: bool = True
+    ai_use_astrbot_provider: bool = True
+    ai_provider_id: str = ""
+    ai_provider_available: bool = False
     ai_api_base: str = "https://api.openai.com/v1"
     ai_model: str = "gpt-4o-mini"
     ai_api_key: str = field(default="", repr=False)
@@ -451,6 +454,10 @@ class PluginConfig:
             disabled_sources=disabled,
             rss_sources=rss_sources,
             ai_enabled=_as_bool(get("ai_enabled"), True),
+            ai_use_astrbot_provider=_as_bool(
+                get("ai_use_astrbot_provider"), True
+            ),
+            ai_provider_id=_as_str(get("ai_provider_id")),
             ai_api_base=ai_base,
             ai_model=ai_model,
             ai_api_key=ai_key,
@@ -490,12 +497,13 @@ class PluginConfig:
     # ------------------------------------------------------------------
     @property
     def ai_available(self) -> bool:
-        return bool(
-            self.ai_enabled
-            and self.ai_api_key
-            and self.ai_api_base
-            and self.ai_model
+        external = bool(
+            self.ai_api_key and self.ai_api_base and self.ai_model
         )
+        astrbot_provider = bool(
+            self.ai_use_astrbot_provider and self.ai_provider_available
+        )
+        return bool(self.ai_enabled and (external or astrbot_provider))
 
     @property
     def db_path(self) -> Path:
@@ -536,6 +544,9 @@ class PluginConfig:
             "max_per_source": self.max_per_source,
             "ai_enabled": self.ai_enabled,
             "ai_available": self.ai_available,
+            "ai_use_astrbot_provider": self.ai_use_astrbot_provider,
+            "ai_provider_available": self.ai_provider_available,
+            "ai_provider_id": self.ai_provider_id,
             "ai_model": self.ai_model,
             "ai_key_configured": bool(self.ai_api_key),
             "ai_key_source": self.ai_key_source,
