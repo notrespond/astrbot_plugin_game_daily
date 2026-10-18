@@ -387,7 +387,7 @@ class PluginConfig:
                     ai_key_source = f"env:{env_name}"
                     break
         if not ai_key:
-            warnings.append("未配置 AI API Key，将使用基于规则的筛选与摘要。")
+            warnings.append("未配置外部 AI API Key，将优先使用 AstrBot 默认聊天模型；模型不可用时回退规则模式。")
 
         theme = _as_str(get("poster_theme"), "dark-neon") or "dark-neon"
         if theme not in ALLOWED_THEMES:

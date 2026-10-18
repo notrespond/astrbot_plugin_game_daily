@@ -2,7 +2,7 @@
 
 The renderer is intentionally self-contained: no online image service, no
 external template, no remote thumbnails.  It draws a 16:9 editorial poster with
-a dark gradient, cards, dividers and typographic hierarchy.
+a dark gradient, editorial columns, hairline dividers and typographic hierarchy.
 
 Fonts are discovered from the configured path first and then from common
 Linux/Windows/macOS locations.  If no CJK-capable font exists, rendering fails
@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFilter, ImageFont
+from PIL import Image, ImageDraw, ImageFont
 
 from .config import PluginConfig
 from .models import NewsItem, ReportStats
@@ -45,57 +45,38 @@ class PosterTheme:
     bg_top: tuple[int, int, int]
     bg_bottom: tuple[int, int, int]
     accent: tuple[int, int, int]
-    accent2: tuple[int, int, int]
     text: tuple[int, int, int]
     muted: tuple[int, int, int]
-    card: tuple[int, int, int]
-    border: tuple[int, int, int]
+    rule: tuple[int, int, int]
 
 
+# A restrained editorial palette.  Every theme keeps the same calm cyan
+# accent; only the dark background shifts slightly.
 THEMES: dict[str, PosterTheme] = {
     "dark-neon": PosterTheme(
-        bg_top=(11, 16, 31),
-        bg_bottom=(4, 6, 14),
-        accent=(57, 224, 255),
-        accent2=(166, 118, 255),
-        text=(244, 248, 255),
-        muted=(148, 162, 190),
-        card=(18, 25, 43),
-        border=(255, 255, 255),
+        bg_top=(10, 17, 30),
+        bg_bottom=(4, 7, 14),
+        accent=(83, 196, 211),
+        text=(238, 243, 249),
+        muted=(137, 151, 171),
+        rule=(38, 51, 69),
     ),
     "dark-blue": PosterTheme(
-        bg_top=(8, 19, 40),
-        bg_bottom=(3, 8, 20),
-        accent=(79, 151, 255),
-        accent2=(49, 214, 255),
-        text=(241, 247, 255),
-        muted=(145, 164, 194),
-        card=(15, 29, 54),
-        border=(255, 255, 255),
+        bg_top=(8, 18, 35),
+        bg_bottom=(3, 8, 18),
+        accent=(83, 196, 211),
+        text=(238, 243, 249),
+        muted=(137, 151, 171),
+        rule=(36, 48, 66),
     ),
     "dark-crimson": PosterTheme(
-        bg_top=(28, 12, 22),
-        bg_bottom=(9, 4, 10),
-        accent=(255, 92, 116),
-        accent2=(255, 174, 92),
-        text=(255, 246, 246),
-        muted=(187, 156, 166),
-        card=(40, 18, 30),
-        border=(255, 255, 255),
+        bg_top=(22, 14, 22),
+        bg_bottom=(8, 5, 9),
+        accent=(83, 196, 211),
+        text=(245, 241, 244),
+        muted=(172, 150, 159),
+        rule=(50, 39, 47),
     ),
-}
-
-CATEGORY_COLORS: dict[str, tuple[int, int, int]] = {
-    "发售": (76, 226, 154),
-    "更新": (57, 210, 255),
-    "免费/福利": (255, 200, 77),
-    "折扣": (255, 148, 73),
-    "电竞": (255, 105, 180),
-    "行业": (116, 152, 255),
-    "主机": (164, 126, 255),
-    "PC": (90, 224, 230),
-    "独立": (130, 232, 190),
-    "综合": (180, 192, 214),
 }
 
 _WEEKDAYS = ("星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日")
@@ -570,6 +551,8 @@ class PosterRenderer:
     def _background(
         self, width: int, height: int, s: float, theme: PosterTheme
     ) -> Image.Image:
+        # A quiet vertical wash: enough to separate the poster from a chat
+        # background without competing with the typography.
         image = Image.new("RGB", (width, height), theme.bg_bottom)
         draw = ImageDraw.Draw(image)
         for y in range(height):
@@ -578,64 +561,6 @@ class PosterRenderer:
                 [(0, y), (width, y)],
                 fill=_lerp_color(theme.bg_top, theme.bg_bottom, ratio),
             )
-
-        overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-        glow_draw = ImageDraw.Draw(overlay)
-        glow_draw.ellipse(
-            [
-                int(-width * 0.18),
-                int(-height * 0.30),
-                int(width * 0.52),
-                int(height * 0.55),
-            ],
-            fill=(*theme.accent, 46),
-        )
-        glow_draw.ellipse(
-            [
-                int(width * 0.55),
-                int(height * 0.55),
-                int(width * 1.18),
-                int(height * 1.30),
-            ],
-            fill=(*theme.accent2, 38),
-        )
-        overlay = overlay.filter(ImageFilter.GaussianBlur(max(24, int(80 * s))))
-        image = Image.alpha_composite(image.convert("RGBA"), overlay)
-
-        grid = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-        grid_draw = ImageDraw.Draw(grid)
-        step = max(24, int(64 * s))
-        for x in range(-height, width, step):
-            grid_draw.line(
-                [(x, 0), (x + height, height)],
-                fill=(255, 255, 255, 6),
-                width=1,
-            )
-        for y in range(0, height, step):
-            grid_draw.line(
-                [(0, y), (width, y)], fill=(255, 255, 255, 5), width=1
-            )
-        grid_draw.ellipse(
-            [
-                int(width * 0.72),
-                int(-height * 0.16),
-                int(width * 1.06),
-                int(height * 0.34),
-            ],
-            outline=(*theme.accent, 28),
-            width=max(1, int(2 * s)),
-        )
-        grid_draw.ellipse(
-            [
-                int(width * 0.77),
-                int(-height * 0.10),
-                int(width * 1.01),
-                int(height * 0.26),
-            ],
-            outline=(*theme.accent2, 20),
-            width=max(1, int(1 * s)),
-        )
-        image = Image.alpha_composite(image, grid)
         return image
 
     def _draw_header(
@@ -649,41 +574,42 @@ class PosterRenderer:
         ai_used: bool,
     ) -> None:
         left = int(round(44 * s))
-        top = int(round(26 * s))
-        accent_bar = [left, top + int(4 * s), left + int(5 * s), top + int(78 * s)]
-        draw.rounded_rectangle(accent_bar, radius=int(3 * s), fill=theme.accent)
+        top = int(round(28 * s))
+        rule_w = max(1, int(round(2 * s)))
+        draw.rectangle(
+            [left, top, left + int(round(42 * s)), top + rule_w],
+            fill=theme.accent,
+        )
 
-        title_font = fonts.font(40 * s, bold=True)
-        subtitle_font = fonts.font(17 * s)
-        tiny_font = fonts.font(12 * s)
-        date_font = fonts.font(22 * s, bold=True)
-        date_small = fonts.font(12 * s)
+        title_font = fonts.font(39 * s, bold=True)
+        subtitle_font = fonts.font(16 * s)
+        tiny_font = fonts.font(11 * s)
+        date_font = fonts.font(21 * s, bold=True)
+        date_small = fonts.font(11 * s)
 
-        title_x = left + int(18 * s)
+        title_y = top + int(round(14 * s))
         _draw_tracked(
             draw,
-            title_x,
-            top,
+            left,
+            title_y,
             "GAME DAILY",
             title_font,
             theme.text,
-            max(1.0, 2.4 * s),
+            max(1.0, 2.2 * s),
         )
+        subtitle_y = title_y + int(round(52 * s))
+        subtitle = "每日游戏情报"
         draw.text(
-            (title_x + int(1 * s), top + int(52 * s)),
-            "每日游戏情报",
+            (left, subtitle_y),
+            subtitle,
             font=subtitle_font,
             fill=theme.muted,
         )
-        dot_x = title_x + int(112 * s)
-        dot_y = top + int(60 * s)
-        draw.ellipse(
-            [dot_x, dot_y, dot_x + int(4 * s), dot_y + int(4 * s)],
-            fill=theme.accent,
-        )
+        subtitle_bbox = _text_bbox(draw, subtitle, subtitle_font)
+        subtitle_w = subtitle_bbox[2] - subtitle_bbox[0]
         draw.text(
-            (dot_x + int(12 * s), top + int(52 * s)),
-            "PC · 主机 · 独立 · 电竞",
+            (left + subtitle_w + int(round(14 * s)), subtitle_y + int(3 * s)),
+            "PC / 主机 / 独立 / 电竞",
             font=tiny_font,
             fill=theme.muted,
         )
@@ -692,7 +618,7 @@ class PosterRenderer:
         date_bbox = _text_bbox(draw, date_text, date_font)
         date_w = date_bbox[2] - date_bbox[0]
         draw.text(
-            (width - left - date_w, top + int(2 * s)),
+            (width - left - date_w, top),
             date_text,
             font=date_font,
             fill=theme.text,
@@ -703,44 +629,26 @@ class PosterRenderer:
         sub_bbox = _text_bbox(draw, sub_text, date_small)
         sub_w = sub_bbox[2] - sub_bbox[0]
         draw.text(
-            (width - left - sub_w, top + int(32 * s)),
+            (width - left - sub_w, top + int(round(27 * s))),
             sub_text,
             font=date_small,
             fill=theme.muted,
         )
-        tag = "AI 精选" if ai_used else "本地精选"
-        tag_font = fonts.font(11 * s, bold=True)
-        tag_bbox = _text_bbox(draw, tag, tag_font)
-        tag_w = tag_bbox[2] - tag_bbox[0] + int(16 * s)
-        tag_h = int(20 * s)
-        tag_x2 = width - left
-        tag_x1 = tag_x2 - tag_w
-        tag_y = top + int(52 * s)
-        draw.rounded_rectangle(
-            [tag_x1, tag_y, tag_x2, tag_y + tag_h],
-            radius=int(10 * s),
-            fill=(*theme.accent, 20),
-            outline=(*theme.accent, 80),
-            width=1,
-        )
+        tag = "AI 编辑" if ai_used else "编辑精选"
+        tag_bbox = _text_bbox(draw, tag, tiny_font)
+        tag_w = tag_bbox[2] - tag_bbox[0]
         draw.text(
-            (tag_x1 + int(8 * s), tag_y + int(3 * s)),
+            (width - left - tag_w, top + int(round(48 * s))),
             tag,
-            font=tag_font,
+            font=tiny_font,
             fill=theme.accent,
         )
 
         divider_y = int(round(118 * s))
         draw.line(
             [(left, divider_y), (width - left, divider_y)],
-            fill=(*theme.border, 26),
+            fill=theme.rule,
             width=1,
-        )
-        accent_end = left + int(round(118 * s))
-        draw.line(
-            [(left, divider_y), (accent_end, divider_y)],
-            fill=(*theme.accent, 190),
-            width=max(1, int(round(2 * s))),
         )
 
     def _card_rects(
@@ -753,8 +661,9 @@ class PosterRenderer:
         s: float,
     ) -> list[tuple[int, int, int, int]]:
         content_h = max(80, content_bottom - content_top)
-        gap = max(8, int(round(12 * s)))
-        card_w = (width - 2 * margin - gap) // 2
+        col_gap = max(18, int(round(44 * s)))
+        row_gap = max(10, int(round(22 * s)))
+        card_w = (width - 2 * margin - col_gap) // 2
         rects: list[tuple[int, int, int, int]] = []
         if count <= 0:
             return rects
@@ -765,12 +674,17 @@ class PosterRenderer:
                 return [(margin, top, width - margin, top + row_h)]
             return [
                 (margin, top, margin + card_w, top + row_h),
-                (margin + card_w + gap, top, width - margin, top + row_h),
+                (margin + card_w + col_gap, top, width - margin, top + row_h),
             ]
         rows = math.ceil(count / 2)
-        row_h = (content_h - (rows - 1) * gap) // rows
+        row_h = (content_h - (rows - 1) * row_gap) // rows
+        start_top = content_top
+        if rows == 2:
+            row_h = min(row_h, int(round(220 * s)))
+            block_h = rows * row_h + (rows - 1) * row_gap
+            start_top = content_top + max(0, (content_h - block_h) // 2)
         for row in range(rows):
-            top = content_top + row * (row_h + gap)
+            top = start_top + row * (row_h + row_gap)
             remaining = count - row * 2
             if remaining == 1:
                 rects.append((margin, top, width - margin, top + row_h))
@@ -778,9 +692,9 @@ class PosterRenderer:
                 rects.append((margin, top, margin + card_w, top + row_h))
                 rects.append(
                     (
-                        margin + card_w + gap,
+                        margin + card_w + col_gap,
                         top,
-                        margin + card_w + gap + card_w,
+                        margin + card_w + col_gap + card_w,
                         top + row_h,
                     )
                 )
@@ -803,9 +717,20 @@ class PosterRenderer:
         rects = self._card_rects(
             len(items), width, margin, content_top, content_bottom, s
         )
+        if len(rects) > 2:
+            tops = sorted({rect[1] for rect in rects})
+            for top in tops[1:]:
+                previous_bottom = max(
+                    rect[3] for rect in rects if rect[1] < top
+                )
+                separator_y = (previous_bottom + top) // 2
+                draw.line(
+                    [(margin, separator_y), (width - margin, separator_y)],
+                    fill=theme.rule,
+                    width=1,
+                )
         for index, (item, rect) in enumerate(zip(items, rects), start=1):
             self._draw_card(
-                image,
                 draw,
                 item,
                 index,
@@ -817,7 +742,6 @@ class PosterRenderer:
 
     def _draw_card(
         self,
-        image: Image.Image,
         draw: ImageDraw.ImageDraw,
         item: NewsItem,
         index: int,
@@ -827,99 +751,59 @@ class PosterRenderer:
         fonts: FontBook,
     ) -> None:
         x1, y1, x2, y2 = rect
-        card_w = max(1, x2 - x1)
         card_h = max(1, y2 - y1)
-        radius = int(round(16 * s))
-        pad = int(round(14 * s))
+        text_w = max(1, x2 - x1)
+        pad_top = int(round(12 * s))
+        pad_bottom = int(round(8 * s))
+        text_x = x1
 
-        overlay = Image.new("RGBA", (card_w, card_h), (0, 0, 0, 0))
-        card_draw = ImageDraw.Draw(overlay)
-        card_draw.rounded_rectangle(
-            [0, 0, card_w - 1, card_h - 1],
-            radius=radius,
-            fill=(*theme.card, 218),
-            outline=(*theme.border, 30),
-            width=1,
-        )
-        accent_w = max(2, int(round(3 * s)))
-        card_draw.rounded_rectangle(
-            [0, int(round(14 * s)), accent_w, card_h - int(round(14 * s))],
-            radius=accent_w,
-            fill=(*theme.accent, 205),
-        )
-        image.alpha_composite(overlay, dest=(x1, y1))
-        draw = ImageDraw.Draw(image)
-
-        # Index badge and category chip share the top row.
-        badge_size = int(round(26 * s))
-        badge_x = x1 + pad
-        badge_y = y1 + pad
-        category = item.category if item.category in CATEGORY_COLORS else "综合"
-        category_color = CATEGORY_COLORS[category]
         index_font = fonts.font(11 * s, bold=True)
-        card_draw = ImageDraw.Draw(image)
-        card_draw.rounded_rectangle(
-            [badge_x, badge_y, badge_x + badge_size, badge_y + badge_size],
-            radius=int(round(8 * s)),
-            fill=(*category_color, 26),
-            outline=(*category_color, 82),
-            width=1,
-        )
+        category_font = fonts.font(10 * s, bold=True)
         index_text = f"{index:02d}"
         idx_bbox = _text_bbox(draw, index_text, index_font)
+        index_color = theme.accent if index == 1 else theme.muted
         draw.text(
-            (
-                badge_x + (badge_size - (idx_bbox[2] - idx_bbox[0])) / 2,
-                badge_y + (badge_size - (idx_bbox[3] - idx_bbox[1])) / 2 - idx_bbox[1],
-            ),
+            (text_x, y1 + pad_top),
             index_text,
             font=index_font,
-            fill=category_color,
+            fill=index_color,
         )
 
-        chip_font = fonts.font(10.5 * s, bold=True)
-        chip_text = category
-        chip_bbox = _text_bbox(draw, chip_text, chip_font)
-        chip_w = chip_bbox[2] - chip_bbox[0] + int(round(16 * s))
-        chip_h = int(round(21 * s))
-        chip_x2 = x2 - pad
-        chip_x1 = chip_x2 - chip_w
-        chip_y = y1 + pad + max(0, (badge_size - chip_h) // 2)
-        draw.rounded_rectangle(
-            [chip_x1, chip_y, chip_x2, chip_y + chip_h],
-            radius=int(round(10 * s)),
-            fill=(*category_color, 20),
-            outline=(*category_color, 75),
-            width=1,
-        )
+        category = item.category or "综合"
+        cat_bbox = _text_bbox(draw, category, category_font)
+        cat_w = cat_bbox[2] - cat_bbox[0]
         draw.text(
-            (
-                chip_x1 + int(round(8 * s)),
-                chip_y + (chip_h - (chip_bbox[3] - chip_bbox[1])) / 2 - chip_bbox[1],
-            ),
-            chip_text,
-            font=chip_font,
-            fill=category_color,
+            (x2 - cat_w, y1 + pad_top - cat_bbox[1]),
+            category,
+            font=category_font,
+            fill=theme.accent,
         )
 
-        top_row_h = max(badge_size, chip_h)
-        title_y = y1 + pad + top_row_h + int(round(7 * s))
-        source_h = int(round(15 * s))
-        source_y = y2 - pad - source_h
-        text_x = x1 + pad
-        text_w = card_w - pad * 2
+        top_row_h = max(
+            idx_bbox[3] - idx_bbox[1], cat_bbox[3] - cat_bbox[1]
+        )
+        title_y = y1 + pad_top + top_row_h + int(round(6 * s))
+        source_h = int(round(14 * s))
+        source_y = y2 - pad_bottom - source_h
 
         base_card_h = card_h / max(0.01, s)
-        base_title = max(17.0, min(29.0, (base_card_h - 58) * 0.185))
+        base_title = max(19.0, min(28.0, (base_card_h - 50) * 0.2))
+        if index == 1:
+            base_title += 1.5
         title_font = fonts.font(base_title * s, bold=True)
-        title_lh = int(round(title_font.size * 1.28))
+        title_lh = int(round(title_font.size * 1.26))
         title_lines = _wrap_text(item.display_title, title_font, text_w, 2)
         title_block = len(title_lines) * title_lh
 
-        summary_available = source_y - int(round(6 * s)) - (title_y + title_block)
-        summary_font = fonts.font(max(11.5, base_title * 0.64) * s)
-        summary_lh = int(round(summary_font.size * 1.38))
-        max_summary_lines = max(0, min(2, summary_available // max(1, summary_lh)))
+        summary_available = source_y - int(round(5 * s)) - (
+            title_y + title_block
+        )
+        summary_font = fonts.font(max(12.0, base_title * 0.6) * s)
+        summary_lh = int(round(summary_font.size * 1.42))
+        summary_line_cap = 3 if card_h >= int(round(190 * s)) else 2
+        max_summary_lines = max(
+            0, min(summary_line_cap, summary_available // max(1, summary_lh))
+        )
         summary_text = item.display_summary or "来源未提供摘要。"
         summary_lines = _wrap_text(
             summary_text, summary_font, text_w, max_summary_lines
@@ -935,7 +819,7 @@ class PosterRenderer:
             )
             current_y += title_lh
         if summary_lines:
-            current_y += int(round(4 * s))
+            current_y += int(round(3 * s))
             for line in summary_lines:
                 draw.text(
                     (text_x, current_y),
@@ -945,14 +829,10 @@ class PosterRenderer:
                 )
                 current_y += summary_lh
 
-        # Source / time line pinned to the bottom of the card.
-        source_font = fonts.font(10.5 * s)
-        dot_r = max(1, int(round(2 * s)))
-        dot_y = source_y + source_h // 2
-        draw.ellipse(
-            [text_x, dot_y, text_x + dot_r * 2, dot_y + dot_r * 2],
-            fill=category_color,
-        )
+        # Keep the source line close to the copy when the story is short;
+        # only pin it to the bottom when the text actually reaches there.
+        source_y = min(source_y, current_y + int(round(6 * s)))
+        source_font = fonts.font(10 * s)
         source_name = _clean_display_text(item.display_source) or "未知来源"
         time_text = (
             "时间未标注"
@@ -962,13 +842,12 @@ class PosterRenderer:
             )
         )
         official_prefix = "官方 · " if item.is_official else ""
-        source_text = f"{official_prefix}来源 · {source_name} · {time_text}"
-        max_source_w = text_w - dot_r * 2 - int(round(8 * s))
-        source_line = _wrap_text(source_text, source_font, max_source_w, 1)
+        source_text = f"{official_prefix}{source_name} · {time_text}"
+        source_line = _wrap_text(source_text, source_font, text_w, 1)
         if source_line:
             draw.text(
                 (
-                    text_x + dot_r * 2 + int(round(7 * s)),
+                    text_x,
                     source_y + (source_h - source_font.size) // 2 - 1,
                 ),
                 source_line[0],
@@ -990,65 +869,33 @@ class PosterRenderer:
     ) -> None:
         center_x = width // 2
         center_y = (content_top + content_bottom) // 2
-        panel_w = int(round(620 * s))
-        panel_h = int(round(250 * s))
-        overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-        panel = ImageDraw.Draw(overlay)
-        panel.rounded_rectangle(
-            [
-                center_x - panel_w // 2,
-                center_y - panel_h // 2,
-                center_x + panel_w // 2,
-                center_y + panel_h // 2,
-            ],
-            radius=int(round(22 * s)),
-            fill=(*theme.card, 190),
-            outline=(*theme.border, 25),
-            width=1,
-        )
-        image.alpha_composite(overlay)
-        draw = ImageDraw.Draw(image)
-
-        icon_y = center_y - int(round(68 * s))
-        radius = int(round(27 * s))
-        draw.ellipse(
-            [
-                center_x - radius,
-                icon_y - radius,
-                center_x + radius,
-                icon_y + radius,
-            ],
-            outline=(*theme.accent, 120),
-            width=max(1, int(round(2 * s))),
-        )
+        rule_w = int(round(36 * s))
+        rule_y = center_y - int(round(62 * s))
         draw.line(
-            [
-                (center_x - int(round(10 * s)), icon_y),
-                (center_x + int(round(10 * s)), icon_y),
-            ],
+            [(center_x - rule_w // 2, rule_y), (center_x + rule_w // 2, rule_y)],
             fill=theme.accent,
             width=max(1, int(round(2 * s))),
         )
 
-        title_font = fonts.font(34 * s, bold=True)
+        title_font = fonts.font(32 * s, bold=True)
         title = "今日暂无更新"
         title_bbox = _text_bbox(draw, title, title_font)
         draw.text(
             (
                 center_x - (title_bbox[2] - title_bbox[0]) / 2,
-                center_y - int(round(18 * s)),
+                center_y - int(round(22 * s)),
             ),
             title,
             font=title_font,
             fill=theme.text,
         )
-        subtitle_font = fonts.font(15 * s)
+        subtitle_font = fonts.font(14 * s)
         subtitle = "没有符合条件的游戏资讯，明天见。"
         sub_bbox = _text_bbox(draw, subtitle, subtitle_font)
         draw.text(
             (
                 center_x - (sub_bbox[2] - sub_bbox[0]) / 2,
-                center_y + int(round(34 * s)),
+                center_y + int(round(30 * s)),
             ),
             subtitle,
             font=subtitle_font,
@@ -1068,21 +915,20 @@ class PosterRenderer:
     ) -> None:
         left = int(round(44 * s))
         right = width - left
-        line_y = height - int(round(50 * s))
+        line_y = height - int(round(48 * s))
         draw.line(
             [(left, line_y), (right, line_y)],
-            fill=(*theme.border, 22),
+            fill=theme.rule,
             width=1,
         )
-        font = fonts.font(10.5 * s)
-        small = fonts.font(9.5 * s)
+        font = fonts.font(10 * s)
         stats_text = (
             f"采集 {stats.total_collected} 条  ·  去重后 "
             f"{stats.total_after_local_dedupe} 条  ·  展示 "
             f"{stats.total_selected} 条"
         )
         draw.text(
-            (left, line_y + int(round(8 * s))),
+            (left, line_y + int(round(9 * s))),
             stats_text,
             font=font,
             fill=theme.muted,
@@ -1094,18 +940,8 @@ class PosterRenderer:
         bbox = _text_bbox(draw, update_text, font)
         update_w = bbox[2] - bbox[0]
         draw.text(
-            (right - update_w, line_y + int(round(8 * s))),
+            (right - update_w, line_y + int(round(9 * s))),
             update_text,
             font=font,
             fill=theme.muted,
         )
-        source_text = "公开 RSS / 官方新闻接口 · 内容以原文为准"
-        source_bbox = _text_bbox(draw, source_text, small)
-        source_w = source_bbox[2] - source_bbox[0]
-        if width - source_w > left * 2 + 220 * s:
-            draw.text(
-                (right - source_w, line_y - int(round(14 * s))),
-                source_text,
-                font=small,
-                fill=theme.muted,
-            )

@@ -106,7 +106,17 @@ class GameDailyPlugin(Star):
             self.cfg.push_time,
             self.cfg.timezone_name,
             len(self.cfg.push_targets),
-            "on" if self.cfg.ai_available else "fallback",
+            (
+                "on"
+                if self.cfg.ai_available
+                else (
+                    "auto"
+                    if self.cfg.ai_enabled
+                    and self.cfg.ai_use_astrbot_provider
+                    and not self.cfg.ai_api_key
+                    else "fallback"
+                )
+            ),
             len(build_sources(self.cfg)),
             self.cfg.poster_width,
             self.cfg.poster_height,
