@@ -8,6 +8,8 @@
 
 海报由本地 Pillow 绘制，不依赖在线图片生成服务。AI 不可用时会自动降级到基于规则的筛选、分类和摘要，不会让当天日报完全中断。
 
+![游戏日报海报预览](docs/preview.png)
+
 > 本项目按 AstrBot 4.29.0 的实际插件接口开发；所有新闻都来自公开 RSS/Atom 或 Steam 官方新闻接口，不会生成虚构新闻。
 
 ---
@@ -523,6 +525,6 @@ python astrbot_plugin_game_daily/tests/manual_smoke.py
 
 ## 15. 许可与来源
 
-- 插件代码按项目需要部署使用。
+- 插件代码以 **GPL-3.0** 协议开源：https://github.com/notrespond/astrbot_plugin_game_daily
 - 新闻内容版权归各来源所有；海报只展示标题、短摘要、来源和原文链接，不复制全文。
 - 使用公开 RSS/Atom 与 Steam 官方新闻接口；请遵守来源站点的访问规则和频率限制。

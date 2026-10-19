@@ -4,6 +4,7 @@ short_desc: 每日采集游戏新闻，AI 摘要分类，生成中文海报并�
 desc: 从公开 RSS/Atom 与 Steam 官方新闻接口采集最近 24 小时游戏资讯，去重、AI 摘要分类后使用 Pillow 生成本地中文新闻海报，并通过 AstrBot 定时推送。AI 不可用时自动回退规则模式。
 version: v1.0.0
 author: OTAKUs
+repo: https://github.com/notrespond/astrbot_plugin_game_daily
 astrbot_version: ">=4.29.0,<5"
 support_platforms:
   - aiocqhttp
