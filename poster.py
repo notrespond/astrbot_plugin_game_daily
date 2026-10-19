@@ -1,8 +1,8 @@
 """Pillow poster renderer for the Game Daily report.
 
-The renderer is intentionally self-contained: no online image service, no
-external template, no remote thumbnails.  It draws a 16:9 editorial poster with
-a dark gradient, editorial columns, hairline dividers and typographic hierarchy.
+The renderer is intentionally self-contained: no online image service and no
+external template.  It draws a 3:4 white editorial poster with real news
+thumbnails, a Steam deals strip and typographic hierarchy.
 
 Fonts are discovered from the configured path first and then from common
 Linux/Windows/macOS locations.  If no CJK-capable font exists, rendering fails
@@ -11,22 +11,24 @@ with a clear error instead of silently producing tofu/garbled Chinese.
 
 from __future__ import annotations
 
+import hashlib
+import io
 import logging
-import math
 import os
 import re
 import shutil
 import subprocess
 import threading
+import urllib.request
 import uuid
-from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 from .config import PluginConfig
-from .models import NewsItem, ReportStats
+from .models import NewsItem, ReportStats, SteamDeal
 
 log = logging.getLogger(__name__)
 
@@ -35,49 +37,25 @@ _EMOJI_RE = re.compile(
     "\ufe0f\u200d\u20e3]"
 )
 
+COLOR_BG = (255, 255, 255)
+COLOR_TEXT = (17, 19, 24)
+COLOR_BODY = (85, 91, 102)
+COLOR_MUTED = (129, 136, 149)
+COLOR_SOURCE = (112, 126, 146)
+COLOR_RULE = (220, 224, 229)
+COLOR_ACCENT = (40, 185, 176)
+COLOR_ACCENT_SOFT = (232, 248, 246)
+COLOR_STEAM = (33, 136, 56)
+COLOR_TAG_BG = (240, 242, 244)
+
+
+def _px(value: float, scale: float) -> int:
+    return int(round(value * scale))
+
 
 class PosterError(RuntimeError):
     pass
 
-
-@dataclass(frozen=True)
-class PosterTheme:
-    bg_top: tuple[int, int, int]
-    bg_bottom: tuple[int, int, int]
-    accent: tuple[int, int, int]
-    text: tuple[int, int, int]
-    muted: tuple[int, int, int]
-    rule: tuple[int, int, int]
-
-
-# A restrained editorial palette.  Every theme keeps the same calm cyan
-# accent; only the dark background shifts slightly.
-THEMES: dict[str, PosterTheme] = {
-    "dark-neon": PosterTheme(
-        bg_top=(10, 17, 30),
-        bg_bottom=(4, 7, 14),
-        accent=(83, 196, 211),
-        text=(238, 243, 249),
-        muted=(137, 151, 171),
-        rule=(38, 51, 69),
-    ),
-    "dark-blue": PosterTheme(
-        bg_top=(8, 18, 35),
-        bg_bottom=(3, 8, 18),
-        accent=(83, 196, 211),
-        text=(238, 243, 249),
-        muted=(137, 151, 171),
-        rule=(36, 48, 66),
-    ),
-    "dark-crimson": PosterTheme(
-        bg_top=(22, 14, 22),
-        bg_bottom=(8, 5, 9),
-        accent=(83, 196, 211),
-        text=(245, 241, 244),
-        muted=(172, 150, 159),
-        rule=(50, 39, 47),
-    ),
-}
 
 _WEEKDAYS = ("星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日")
 
@@ -422,10 +400,66 @@ def _draw_tracked(
     return cursor - x
 
 
-def _lerp_color(
-    start: tuple[int, int, int], end: tuple[int, int, int], ratio: float
-) -> tuple[int, int, int]:
-    return tuple(int(round(a + (b - a) * ratio)) for a, b in zip(start, end))
+def _cover_image(
+    image: Image.Image,
+    size: tuple[int, int],
+    radius: int,
+) -> Image.Image:
+    width, height = size
+    target = ImageOps.fit(image.convert("RGB"), size, method=Image.Resampling.LANCZOS)
+    mask = Image.new("L", size, 0)
+    mask_draw = ImageDraw.Draw(mask)
+    mask_draw.rounded_rectangle(
+        [0, 0, width - 1, height - 1],
+        radius=max(0, radius),
+        fill=255,
+    )
+    result = Image.new("RGBA", size, (0, 0, 0, 0))
+    result.paste(target, (0, 0), mask)
+    return result
+
+
+def _draw_text_cover(
+    image: Image.Image,
+    rect: tuple[int, int, int, int],
+    title: str,
+    scale: float,
+    fonts: "FontBook",
+    radius: int,
+    cover: bool = False,
+) -> None:
+    x, y, width, height = rect
+    width = max(1, width)
+    height = max(1, height)
+    panel = Image.new("RGBA", (width, height), (240, 242, 244, 255))
+    draw = ImageDraw.Draw(panel)
+    bar_h = max(2, _px(3, scale))
+    draw.rectangle(
+        [0, 0, _px(26, scale), bar_h],
+        fill=COLOR_ACCENT,
+    )
+    pad = _px(12, scale)
+    font = fonts.font((12 if cover else 11) * scale, bold=True)
+    lines = _wrap_text(
+        _clean_display_text(title) or "游戏新闻",
+        font,
+        width - pad * 2,
+        3,
+    )
+    line_h = _px(17, scale)
+    text_h = len(lines) * line_h
+    text_y = max(pad, (height - text_h) // 2)
+    for line in lines:
+        draw.text((pad, text_y), line, font=font, fill=COLOR_BODY)
+        text_y += line_h
+    mask = Image.new("L", (width, height), 0)
+    ImageDraw.Draw(mask).rounded_rectangle(
+        [0, 0, width - 1, height - 1],
+        radius=max(0, radius),
+        fill=255,
+    )
+    panel.putalpha(mask)
+    image.paste(panel, (x, y), panel)
 
 
 class PosterRenderer:
@@ -434,10 +468,7 @@ class PosterRenderer:
         self.log = logger or log
         self._font_book: FontBook | None = None
         self._lock = threading.RLock()
-
-    @property
-    def theme(self) -> PosterTheme:
-        return THEMES.get(self.config.poster_theme, THEMES["dark-neon"])
+        self._image_cache: dict[str, Image.Image | None] = {}
 
     def _fonts(self) -> FontBook:
         with self._lock:
@@ -456,10 +487,17 @@ class PosterRenderer:
         empty: bool = False,
         filename_prefix: str = "gamedaily",
         ai_used: bool = False,
+        deals: list[SteamDeal] | None = None,
     ) -> str:
         try:
             return self._render(
-                items, stats, now, empty, filename_prefix, ai_used
+                items,
+                stats,
+                now,
+                empty,
+                filename_prefix,
+                ai_used,
+                deals or [],
             )
         except PosterError:
             raise
@@ -494,48 +532,26 @@ class PosterRenderer:
         empty: bool,
         filename_prefix: str,
         ai_used: bool,
+        deals: list[SteamDeal],
     ) -> str:
         width = self.config.poster_width
         height = self.config.poster_height
-        if width < 400 or height < 240:
+        if width < 600 or height < 800:
             raise PosterError("海报尺寸过小")
-        s = min(width / 1200.0, height / 675.0)
-        if s <= 0:
-            raise PosterError("海报尺寸无效")
-
-        fonts = self._fonts()
-        theme = self.theme
-        now_local = now.astimezone(self.config.timezone)
-        image = self._background(width, height, s, theme)
+        s = width / 1200.0
+        image = Image.new("RGB", (width, height), COLOR_BG)
         draw = ImageDraw.Draw(image)
+        now_local = now.astimezone(self.config.timezone)
+        fonts = self._fonts()
 
-        self._draw_header(draw, width, s, now_local, theme, fonts, ai_used)
-        content_top = int(round(136 * s))
-        content_bottom = height - int(round(66 * s))
-        margin = int(round(44 * s))
-
+        images = self._preload_images(items if not empty else [], deals)
+        self._draw_header(draw, width, s, now_local, fonts, ai_used)
         if empty or not items:
-            self._draw_empty(
-                image, draw, width, height, s, theme, fonts, content_top, content_bottom
-            )
+            self._draw_empty(draw, width, height, s, fonts)
         else:
-            self._draw_cards(
-                image,
-                draw,
-                items[:6],
-                width,
-                height,
-                margin,
-                content_top,
-                content_bottom,
-                s,
-                theme,
-                fonts,
-            )
-
-        self._draw_footer(
-            draw, width, height, s, theme, fonts, stats, now_local
-        )
+            self._draw_news(draw, width, s, fonts, items[:6], images, now_local)
+            self._draw_deals(draw, width, s, fonts, deals, images)
+        self._draw_footer(draw, width, height, s, fonts)
 
         output_dir = self.config.output_dir
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -548,358 +564,456 @@ class PosterRenderer:
         self.cleanup()
         return str(path)
 
-    def _background(
-        self, width: int, height: int, s: float, theme: PosterTheme
-    ) -> Image.Image:
-        # A quiet vertical wash: enough to separate the poster from a chat
-        # background without competing with the typography.
-        image = Image.new("RGB", (width, height), theme.bg_bottom)
-        draw = ImageDraw.Draw(image)
-        for y in range(height):
-            ratio = y / max(1, height - 1)
-            draw.line(
-                [(0, y), (width, y)],
-                fill=_lerp_color(theme.bg_top, theme.bg_bottom, ratio),
-            )
-        return image
-
+    # ------------------------------------------------------------------
+    # Header
+    # ------------------------------------------------------------------
     def _draw_header(
         self,
         draw: ImageDraw.ImageDraw,
         width: int,
         s: float,
         now: datetime,
-        theme: PosterTheme,
         fonts: FontBook,
         ai_used: bool,
     ) -> None:
-        left = int(round(44 * s))
-        top = int(round(28 * s))
-        rule_w = max(1, int(round(2 * s)))
+        left = _px(54, s)
+        right = width - left
         draw.rectangle(
-            [left, top, left + int(round(42 * s)), top + rule_w],
-            fill=theme.accent,
+            [left, _px(50, s), left + _px(44, s), _px(54, s)],
+            fill=COLOR_ACCENT,
         )
-
-        title_font = fonts.font(39 * s, bold=True)
-        subtitle_font = fonts.font(16 * s)
-        tiny_font = fonts.font(11 * s)
-        date_font = fonts.font(21 * s, bold=True)
-        date_small = fonts.font(11 * s)
-
-        title_y = top + int(round(14 * s))
+        english_font = fonts.font(12 * s, bold=True)
         _draw_tracked(
             draw,
             left,
-            title_y,
+            _px(64, s),
             "GAME DAILY",
-            title_font,
-            theme.text,
-            max(1.0, 2.2 * s),
-        )
-        subtitle_y = title_y + int(round(52 * s))
-        subtitle = "每日游戏情报"
-        draw.text(
-            (left, subtitle_y),
-            subtitle,
-            font=subtitle_font,
-            fill=theme.muted,
-        )
-        subtitle_bbox = _text_bbox(draw, subtitle, subtitle_font)
-        subtitle_w = subtitle_bbox[2] - subtitle_bbox[0]
-        draw.text(
-            (left + subtitle_w + int(round(14 * s)), subtitle_y + int(3 * s)),
-            "PC / 主机 / 独立 / 电竞",
-            font=tiny_font,
-            fill=theme.muted,
+            english_font,
+            COLOR_MUTED,
+            max(1.0, 2.4 * s),
         )
 
+        title_font = fonts.font(64 * s, bold=True)
+        draw.text(
+            (left, _px(82, s)),
+            "游戏日报",
+            font=title_font,
+            fill=COLOR_TEXT,
+        )
+        subtitle_font = fonts.font(17 * s)
+        draw.text(
+            (left, _px(166, s)),
+            "每日游戏情报 · Steam 折扣精选 · 行业动态",
+            font=subtitle_font,
+            fill=COLOR_MUTED,
+        )
+
+        date_font = fonts.font(38 * s, bold=True)
         date_text = now.strftime("%Y.%m.%d")
         date_bbox = _text_bbox(draw, date_text, date_font)
-        date_w = date_bbox[2] - date_bbox[0]
         draw.text(
-            (width - left - date_w, top),
+            (right - (date_bbox[2] - date_bbox[0]), _px(52, s)),
             date_text,
             font=date_font,
-            fill=theme.text,
+            fill=COLOR_TEXT,
         )
-        weekday = _WEEKDAYS[now.weekday()]
-        week = now.isocalendar().week
-        sub_text = f"{weekday} · 第 {week} 周"
-        sub_bbox = _text_bbox(draw, sub_text, date_small)
-        sub_w = sub_bbox[2] - sub_bbox[0]
+        weekday_font = fonts.font(15 * s)
+        weekday_text = f"{_WEEKDAYS[now.weekday()]} · 第{now.isocalendar().week}周"
+        weekday_bbox = _text_bbox(draw, weekday_text, weekday_font)
         draw.text(
-            (width - left - sub_w, top + int(round(27 * s))),
-            sub_text,
-            font=date_small,
-            fill=theme.muted,
+            (right - (weekday_bbox[2] - weekday_bbox[0]), _px(104, s)),
+            weekday_text,
+            font=weekday_font,
+            fill=COLOR_BODY,
         )
-        tag = "AI 编辑" if ai_used else "编辑精选"
-        tag_bbox = _text_bbox(draw, tag, tiny_font)
-        tag_w = tag_bbox[2] - tag_bbox[0]
+        update_font = fonts.font(12 * s, bold=True)
+        update_text = "每日更新" if ai_used else "今日更新"
+        update_bbox = _text_bbox(draw, update_text, update_font)
         draw.text(
-            (width - left - tag_w, top + int(round(48 * s))),
-            tag,
-            font=tiny_font,
-            fill=theme.accent,
+            (right - (update_bbox[2] - update_bbox[0]), _px(128, s)),
+            update_text,
+            font=update_font,
+            fill=COLOR_ACCENT,
         )
-
-        divider_y = int(round(118 * s))
         draw.line(
-            [(left, divider_y), (width - left, divider_y)],
-            fill=theme.rule,
+            [(left, _px(216, s)), (right, _px(216, s))],
+            fill=COLOR_RULE,
             width=1,
         )
 
-    def _card_rects(
+    # ------------------------------------------------------------------
+    # News
+    # ------------------------------------------------------------------
+    def _draw_news(
         self,
-        count: int,
-        width: int,
-        margin: int,
-        content_top: int,
-        content_bottom: int,
-        s: float,
-    ) -> list[tuple[int, int, int, int]]:
-        content_h = max(80, content_bottom - content_top)
-        col_gap = max(18, int(round(44 * s)))
-        row_gap = max(10, int(round(22 * s)))
-        card_w = (width - 2 * margin - col_gap) // 2
-        rects: list[tuple[int, int, int, int]] = []
-        if count <= 0:
-            return rects
-        if count <= 2:
-            row_h = min(content_h, int(round(300 * s)))
-            top = content_top + (content_h - row_h) // 2
-            if count == 1:
-                return [(margin, top, width - margin, top + row_h)]
-            return [
-                (margin, top, margin + card_w, top + row_h),
-                (margin + card_w + col_gap, top, width - margin, top + row_h),
-            ]
-        rows = math.ceil(count / 2)
-        row_h = (content_h - (rows - 1) * row_gap) // rows
-        start_top = content_top
-        if rows == 2:
-            row_h = min(row_h, int(round(220 * s)))
-            block_h = rows * row_h + (rows - 1) * row_gap
-            start_top = content_top + max(0, (content_h - block_h) // 2)
-        for row in range(rows):
-            top = start_top + row * (row_h + row_gap)
-            remaining = count - row * 2
-            if remaining == 1:
-                rects.append((margin, top, width - margin, top + row_h))
-            else:
-                rects.append((margin, top, margin + card_w, top + row_h))
-                rects.append(
-                    (
-                        margin + card_w + col_gap,
-                        top,
-                        margin + card_w + col_gap + card_w,
-                        top + row_h,
-                    )
-                )
-        return rects[:count]
-
-    def _draw_cards(
-        self,
-        image: Image.Image,
         draw: ImageDraw.ImageDraw,
-        items: list[NewsItem],
         width: int,
-        height: int,
-        margin: int,
-        content_top: int,
-        content_bottom: int,
         s: float,
-        theme: PosterTheme,
         fonts: FontBook,
+        items: list[NewsItem],
+        images: dict[str, Image.Image | None],
+        now: datetime,
     ) -> None:
-        rects = self._card_rects(
-            len(items), width, margin, content_top, content_bottom, s
+        left = _px(54, s)
+        right = width - left
+        section_y = _px(248, s)
+        draw.rectangle(
+            [left, section_y + _px(3, s), left + _px(4, s), section_y + _px(26, s)],
+            fill=COLOR_ACCENT,
         )
-        if len(rects) > 2:
-            tops = sorted({rect[1] for rect in rects})
-            for top in tops[1:]:
-                previous_bottom = max(
-                    rect[3] for rect in rects if rect[1] < top
-                )
-                separator_y = (previous_bottom + top) // 2
+        heading_font = fonts.font(24 * s, bold=True)
+        draw.text(
+            (left + _px(16, s), section_y),
+            "今日要闻",
+            font=heading_font,
+            fill=COLOR_TEXT,
+        )
+        heading_bbox = _text_bbox(draw, "今日要闻", heading_font)
+        line_start = left + _px(16, s) + (heading_bbox[2] - heading_bbox[0]) + _px(18, s)
+        draw.line(
+            [(line_start, section_y + _px(14, s)), (right, section_y + _px(14, s))],
+            fill=COLOR_RULE,
+            width=1,
+        )
+        news_font = fonts.font(10 * s, bold=True)
+        draw.text(
+            (right - _text_bbox(draw, "NEWS", news_font)[2], section_y + _px(2, s)),
+            "NEWS",
+            font=news_font,
+            fill=COLOR_MUTED,
+        )
+
+        top = _px(292, s)
+        row_h = _px(140, s)
+        for index, item in enumerate(items, start=1):
+            y = top + (index - 1) * row_h
+            self._draw_news_item(draw, left, right, y, row_h, s, fonts, item, index, images, now)
+            if index < len(items):
                 draw.line(
-                    [(margin, separator_y), (width - margin, separator_y)],
-                    fill=theme.rule,
+                    [(left, y + row_h - 1), (right, y + row_h - 1)],
+                    fill=COLOR_RULE,
                     width=1,
                 )
-        for index, (item, rect) in enumerate(zip(items, rects), start=1):
-            self._draw_card(
-                draw,
-                item,
-                index,
-                rect,
-                s,
-                theme,
-                fonts,
-            )
 
-    def _draw_card(
+    def _draw_news_item(
         self,
         draw: ImageDraw.ImageDraw,
+        left: int,
+        right: int,
+        y: int,
+        row_h: int,
+        s: float,
+        fonts: FontBook,
         item: NewsItem,
         index: int,
-        rect: tuple[int, int, int, int],
-        s: float,
-        theme: PosterTheme,
-        fonts: FontBook,
+        images: dict[str, Image.Image | None],
+        now: datetime,
     ) -> None:
-        x1, y1, x2, y2 = rect
-        card_h = max(1, y2 - y1)
-        text_w = max(1, x2 - x1)
-        pad_top = int(round(12 * s))
-        pad_bottom = int(round(8 * s))
-        text_x = x1
-
-        index_font = fonts.font(11 * s, bold=True)
-        category_font = fonts.font(10 * s, bold=True)
-        index_text = f"{index:02d}"
-        idx_bbox = _text_bbox(draw, index_text, index_font)
-        index_color = theme.accent if index == 1 else theme.muted
+        # Number block
+        number_size = _px(34, s)
+        number_font = fonts.font(13 * s, bold=True)
+        draw.rounded_rectangle(
+            [left, y + _px(16, s), left + number_size, y + _px(16, s) + number_size],
+            radius=_px(3, s),
+            fill=COLOR_TEXT,
+        )
+        number = f"{index:02d}"
+        nb = _text_bbox(draw, number, number_font)
         draw.text(
-            (text_x, y1 + pad_top),
-            index_text,
-            font=index_font,
-            fill=index_color,
+            (
+                left + (number_size - (nb[2] - nb[0])) / 2,
+                y + _px(16, s) + (number_size - (nb[3] - nb[1])) / 2 - nb[1],
+            ),
+            number,
+            font=number_font,
+            fill=COLOR_BG,
         )
 
-        category = item.category or "综合"
-        cat_bbox = _text_bbox(draw, category, category_font)
-        cat_w = cat_bbox[2] - cat_bbox[0]
-        draw.text(
-            (x2 - cat_w, y1 + pad_top - cat_bbox[1]),
-            category,
-            font=category_font,
-            fill=theme.accent,
-        )
-
-        top_row_h = max(
-            idx_bbox[3] - idx_bbox[1], cat_bbox[3] - cat_bbox[1]
-        )
-        title_y = y1 + pad_top + top_row_h + int(round(6 * s))
-        source_h = int(round(14 * s))
-        source_y = y2 - pad_bottom - source_h
-
-        base_card_h = card_h / max(0.01, s)
-        base_title = max(19.0, min(28.0, (base_card_h - 50) * 0.2))
-        if index == 1:
-            base_title += 1.5
-        title_font = fonts.font(base_title * s, bold=True)
-        title_lh = int(round(title_font.size * 1.26))
-        title_lines = _wrap_text(item.display_title, title_font, text_w, 2)
-        title_block = len(title_lines) * title_lh
-
-        summary_available = source_y - int(round(5 * s)) - (
-            title_y + title_block
-        )
-        summary_font = fonts.font(max(12.0, base_title * 0.6) * s)
-        summary_lh = int(round(summary_font.size * 1.42))
-        summary_line_cap = 3 if card_h >= int(round(190 * s)) else 2
-        max_summary_lines = max(
-            0, min(summary_line_cap, summary_available // max(1, summary_lh))
-        )
-        summary_text = item.display_summary or "来源未提供摘要。"
-        summary_lines = _wrap_text(
-            summary_text, summary_font, text_w, max_summary_lines
-        )
-
-        current_y = title_y
-        for line in title_lines:
-            draw.text(
-                (text_x, current_y),
-                line,
-                font=title_font,
-                fill=theme.text,
+        # Thumbnail
+        thumb_x = left + _px(48, s)
+        thumb_y = y + _px(8, s)
+        thumb_w = _px(170, s)
+        thumb_h = _px(106, s)
+        image = images.get(item.image_url) if item.image_url else None
+        if image is not None:
+            cover = _cover_image(image, (thumb_w, thumb_h), _px(4, s))
+            draw._image.paste(cover, (thumb_x, thumb_y), cover)
+        else:
+            _draw_text_cover(
+                draw._image,
+                (thumb_x, thumb_y, thumb_w, thumb_h),
+                item.display_title or "游戏新闻",
+                s,
+                fonts,
+                _px(4, s),
             )
-            current_y += title_lh
-        if summary_lines:
-            current_y += int(round(3 * s))
-            for line in summary_lines:
-                draw.text(
-                    (text_x, current_y),
-                    line,
-                    font=summary_font,
-                    fill=theme.muted,
-                )
-                current_y += summary_lh
 
-        # Keep the source line close to the copy when the story is short;
-        # only pin it to the bottom when the text actually reaches there.
-        source_y = min(source_y, current_y + int(round(6 * s)))
-        source_font = fonts.font(10 * s)
+        content_x = thumb_x + thumb_w + _px(22, s)
+        # Category tag (right aligned, no large pill)
+        category = item.category or "综合"
+        category_font = fonts.font(10 * s, bold=True)
+        cat_text = "独立游戏" if category == "独立" else category
+        cat_bbox = _text_bbox(draw, cat_text, category_font)
+        cat_w = cat_bbox[2] - cat_bbox[0] + _px(12, s)
+        cat_h = _px(21, s)
+        cat_x = right - cat_w
+        cat_y = y + _px(9, s)
+        cat_fill = COLOR_ACCENT_SOFT if category in {"发售", "更新", "评测"} else COLOR_TAG_BG
+        draw.rounded_rectangle(
+            [cat_x, cat_y, right, cat_y + cat_h],
+            radius=_px(3, s),
+            fill=cat_fill,
+        )
+        draw.text(
+            (cat_x + _px(6, s), cat_y + _px(3, s)),
+            cat_text,
+            font=category_font,
+            fill=COLOR_BODY,
+        )
+
+        text_w = max(_px(100, s), cat_x - content_x - _px(14, s))
+        title_font = fonts.font(22 * s, bold=True)
+        title_lh = _px(28, s)
+        title_lines = _wrap_text(item.display_title, title_font, text_w, 2)
+        title_y = y + _px(8, s)
+        for line in title_lines:
+            draw.text((content_x, title_y), line, font=title_font, fill=COLOR_TEXT)
+            title_y += title_lh
+
+        summary_font = fonts.font(14 * s)
+        summary_lh = _px(19, s)
+        summary_y = title_y + _px(2, s)
+        summary_lines = _wrap_text(
+            item.display_summary or "来源未提供摘要。",
+            summary_font,
+            text_w,
+            2,
+        )
+        for line in summary_lines:
+            draw.text((content_x, summary_y), line, font=summary_font, fill=COLOR_BODY)
+            summary_y += summary_lh
+
+        source_font = fonts.font(10.5 * s)
         source_name = _clean_display_text(item.display_source) or "未知来源"
         time_text = (
             "时间未标注"
             if item.published_at is None
-            else item.published_at.astimezone(self.config.timezone).strftime(
-                "%m-%d %H:%M"
-            )
+            else item.published_at.astimezone(self.config.timezone).strftime("%m.%d %H:%M")
         )
-        official_prefix = "官方 · " if item.is_official else ""
-        source_text = f"{official_prefix}{source_name} · {time_text}"
+        official = "官方 · " if item.is_official else ""
+        source_text = f"{official}{source_name} · {time_text}"
         source_line = _wrap_text(source_text, source_font, text_w, 1)
         if source_line:
+            source_y = min(
+                y + row_h - _px(22, s),
+                summary_y + _px(4, s),
+            )
             draw.text(
-                (
-                    text_x,
-                    source_y + (source_h - source_font.size) // 2 - 1,
-                ),
+                (content_x, source_y),
                 source_line[0],
                 font=source_font,
-                fill=theme.muted,
+                fill=COLOR_SOURCE,
             )
 
+    # ------------------------------------------------------------------
+    # Steam deals
+    # ------------------------------------------------------------------
+    def _draw_deals(
+        self,
+        draw: ImageDraw.ImageDraw,
+        width: int,
+        s: float,
+        fonts: FontBook,
+        deals: list[SteamDeal],
+        images: dict[str, Image.Image | None],
+    ) -> None:
+        left = _px(54, s)
+        right = width - left
+        section_y = _px(1150, s)
+        draw.line([(left, section_y), (right, section_y)], fill=COLOR_RULE, width=1)
+
+        icon_size = _px(24, s)
+        icon_y = _px(1174, s)
+        draw.rounded_rectangle(
+            [left, icon_y, left + icon_size, icon_y + icon_size],
+            radius=_px(4, s),
+            fill=COLOR_TEXT,
+        )
+        icon_font = fonts.font(14 * s, bold=True)
+        ib = _text_bbox(draw, "S", icon_font)
+        draw.text(
+            (
+                left + (icon_size - (ib[2] - ib[0])) / 2,
+                icon_y + (icon_size - (ib[3] - ib[1])) / 2 - ib[1],
+            ),
+            "S",
+            font=icon_font,
+            fill=COLOR_BG,
+        )
+        heading_font = fonts.font(24 * s, bold=True)
+        draw.text(
+            (left + _px(36, s), icon_y - _px(2, s)),
+            "Steam 游戏折扣",
+            font=heading_font,
+            fill=COLOR_TEXT,
+        )
+        hint_font = fonts.font(11.5 * s)
+        hint = "限时优惠 · 精选推荐  →"
+        hb = _text_bbox(draw, hint, hint_font)
+        draw.text(
+            (right - (hb[2] - hb[0]), icon_y + _px(5, s)),
+            hint,
+            font=hint_font,
+            fill=COLOR_MUTED,
+        )
+
+        cards_top = _px(1218, s)
+        gap = _px(18, s)
+        card_w = int((right - left - gap * 3) / 4)
+        if not deals:
+            empty_font = fonts.font(14 * s)
+            text = "暂无有效折扣数据"
+            tb = _text_bbox(draw, text, empty_font)
+            draw.text(
+                (
+                    (width - (tb[2] - tb[0])) / 2,
+                    cards_top + _px(42, s),
+                ),
+                text,
+                font=empty_font,
+                fill=COLOR_MUTED,
+            )
+            return
+
+        for index, deal in enumerate(deals[:4]):
+            x = left + index * (card_w + gap)
+            self._draw_deal_card(
+                draw, x, cards_top, card_w, s, fonts, deal, images
+            )
+
+    def _draw_deal_card(
+        self,
+        draw: ImageDraw.ImageDraw,
+        x: int,
+        top: int,
+        card_w: int,
+        s: float,
+        fonts: FontBook,
+        deal: SteamDeal,
+        images: dict[str, Image.Image | None],
+    ) -> None:
+        cover_h = int(card_w * 9 / 16)
+        image = images.get(deal.image_url) if deal.image_url else None
+        if image is not None:
+            cover = _cover_image(image, (card_w, cover_h), _px(4, s))
+            draw._image.paste(cover, (x, top), cover)
+        else:
+            _draw_text_cover(
+                draw._image,
+                (x, top, card_w, cover_h),
+                deal.name,
+                s,
+                fonts,
+                _px(4, s),
+                cover=True,
+            )
+
+        name_font = fonts.font(15 * s, bold=True)
+        name_lh = _px(19, s)
+        name_lines = _wrap_text(deal.name, name_font, card_w, 2)
+        name_y = top + cover_h + _px(8, s)
+        for line in name_lines:
+            draw.text((x, name_y), line, font=name_font, fill=COLOR_TEXT)
+            name_y += name_lh
+
+        discount_font = fonts.font(11.5 * s, bold=True)
+        tag_text = deal.discount_text
+        tag_bbox = _text_bbox(draw, tag_text, discount_font)
+        tag_w = tag_bbox[2] - tag_bbox[0] + _px(10, s)
+        tag_h = _px(20, s)
+        price_y = name_y + _px(3, s)
+        draw.rounded_rectangle(
+            [x, price_y, x + tag_w, price_y + tag_h],
+            radius=_px(2, s),
+            fill=COLOR_STEAM,
+        )
+        draw.text(
+            (x + _px(5, s), price_y + _px(3, s)),
+            tag_text,
+            font=discount_font,
+            fill=COLOR_BG,
+        )
+
+        old_font = fonts.font(11.5 * s)
+        old_text = deal.original_price_text
+        old_x = x + tag_w + _px(8, s)
+        old_y = price_y + _px(3, s)
+        old_bbox = _text_bbox(draw, old_text, old_font)
+        draw.text((old_x, old_y), old_text, font=old_font, fill=COLOR_MUTED)
+        draw.line(
+            [
+                (old_x, old_y + (old_bbox[3] - old_bbox[1]) // 2 + 1),
+                (old_x + (old_bbox[2] - old_bbox[0]), old_y + (old_bbox[3] - old_bbox[1]) // 2 + 1),
+            ],
+            fill=COLOR_MUTED,
+            width=1,
+        )
+
+        final_font = fonts.font(15 * s, bold=True)
+        final_text = deal.final_price_text
+        final_x = old_x + (old_bbox[2] - old_bbox[0]) + _px(8, s)
+        draw.text(
+            (final_x, price_y + _px(1, s)),
+            final_text,
+            font=final_font,
+            fill=COLOR_TEXT,
+        )
+
+        genre_font = fonts.font(10.5 * s)
+        genre_y = price_y + tag_h + _px(5, s)
+        genre_lines = _wrap_text(deal.genres_text, genre_font, card_w, 2)
+        for line in genre_lines:
+            draw.text((x, genre_y), line, font=genre_font, fill=COLOR_MUTED)
+            genre_y += _px(15, s)
+
+    # ------------------------------------------------------------------
+    # Empty and footer
+    # ------------------------------------------------------------------
     def _draw_empty(
         self,
-        image: Image.Image,
         draw: ImageDraw.ImageDraw,
         width: int,
         height: int,
         s: float,
-        theme: PosterTheme,
         fonts: FontBook,
-        content_top: int,
-        content_bottom: int,
     ) -> None:
         center_x = width // 2
-        center_y = (content_top + content_bottom) // 2
-        rule_w = int(round(36 * s))
-        rule_y = center_y - int(round(62 * s))
+        center_y = _px(730, s)
         draw.line(
-            [(center_x - rule_w // 2, rule_y), (center_x + rule_w // 2, rule_y)],
-            fill=theme.accent,
-            width=max(1, int(round(2 * s))),
+            [
+                (center_x - _px(30, s), center_y),
+                (center_x + _px(30, s), center_y),
+            ],
+            fill=COLOR_ACCENT,
+            width=max(1, _px(2, s)),
         )
-
-        title_font = fonts.font(32 * s, bold=True)
+        title_font = fonts.font(34 * s, bold=True)
         title = "今日暂无更新"
-        title_bbox = _text_bbox(draw, title, title_font)
+        tb = _text_bbox(draw, title, title_font)
         draw.text(
-            (
-                center_x - (title_bbox[2] - title_bbox[0]) / 2,
-                center_y - int(round(22 * s)),
-            ),
+            (center_x - (tb[2] - tb[0]) / 2, center_y + _px(34, s)),
             title,
             font=title_font,
-            fill=theme.text,
+            fill=COLOR_TEXT,
         )
-        subtitle_font = fonts.font(14 * s)
+        subtitle_font = fonts.font(15 * s)
         subtitle = "没有符合条件的游戏资讯，明天见。"
-        sub_bbox = _text_bbox(draw, subtitle, subtitle_font)
+        sb = _text_bbox(draw, subtitle, subtitle_font)
         draw.text(
-            (
-                center_x - (sub_bbox[2] - sub_bbox[0]) / 2,
-                center_y + int(round(30 * s)),
-            ),
+            (center_x - (sb[2] - sb[0]) / 2, center_y + _px(86, s)),
             subtitle,
             font=subtitle_font,
-            fill=theme.muted,
+            fill=COLOR_MUTED,
         )
 
     def _draw_footer(
@@ -908,40 +1022,103 @@ class PosterRenderer:
         width: int,
         height: int,
         s: float,
-        theme: PosterTheme,
         fonts: FontBook,
-        stats: ReportStats,
-        now: datetime,
     ) -> None:
-        left = int(round(44 * s))
+        left = _px(54, s)
         right = width - left
-        line_y = height - int(round(48 * s))
+        line_y = height - _px(70, s)
+        draw.line([(left, line_y), (right, line_y)], fill=COLOR_RULE, width=1)
+
+        icon_y = line_y + _px(18, s)
+        draw.rounded_rectangle(
+            [left, icon_y, left + _px(22, s), icon_y + _px(13, s)],
+            radius=_px(3, s),
+            outline=COLOR_MUTED,
+            width=max(1, _px(1, s)),
+        )
         draw.line(
-            [(left, line_y), (right, line_y)],
-            fill=theme.rule,
-            width=1,
+            [(left + _px(6, s), icon_y + _px(13, s)), (left + _px(4, s), icon_y + _px(17, s))],
+            fill=COLOR_MUTED,
+            width=max(1, _px(1, s)),
         )
-        font = fonts.font(10 * s)
-        stats_text = (
-            f"采集 {stats.total_collected} 条  ·  去重后 "
-            f"{stats.total_after_local_dedupe} 条  ·  展示 "
-            f"{stats.total_selected} 条"
+        draw.line(
+            [(left + _px(16, s), icon_y + _px(13, s)), (left + _px(18, s), icon_y + _px(17, s))],
+            fill=COLOR_MUTED,
+            width=max(1, _px(1, s)),
         )
+        brand_font = fonts.font(11 * s, bold=True)
         draw.text(
-            (left, line_y + int(round(9 * s))),
-            stats_text,
-            font=font,
-            fill=theme.muted,
+            (left + _px(32, s), icon_y - _px(1, s)),
+            "GAME DAILY",
+            font=brand_font,
+            fill=COLOR_BODY,
         )
-        update_text = (
-            f"数据更新 {now.strftime('%m-%d %H:%M')}  ·  "
-            f"{self.config.timezone_name}"
-        )
-        bbox = _text_bbox(draw, update_text, font)
-        update_w = bbox[2] - bbox[0]
+        note_font = fonts.font(10.5 * s)
+        note = "每日游戏资讯 · 与你一起发现更好的游戏"
+        nb = _text_bbox(draw, note, note_font)
         draw.text(
-            (right - update_w, line_y + int(round(9 * s))),
-            update_text,
-            font=font,
-            fill=theme.muted,
+            (right - (nb[2] - nb[0]), icon_y - _px(1, s)),
+            note,
+            font=note_font,
+            fill=COLOR_MUTED,
         )
+
+    # ------------------------------------------------------------------
+    # Images
+    # ------------------------------------------------------------------
+    def _preload_images(
+        self,
+        items: list[NewsItem],
+        deals: list[SteamDeal],
+    ) -> dict[str, Image.Image | None]:
+        urls = [item.image_url for item in items if item.image_url]
+        urls += [deal.image_url for deal in deals if deal.image_url]
+        urls = list(dict.fromkeys(urls))
+        if not urls:
+            return {}
+        with ThreadPoolExecutor(max_workers=min(6, len(urls))) as pool:
+            loaded = list(pool.map(self._load_image, urls))
+        return dict(zip(urls, loaded))
+
+    def _load_image(self, url: str) -> Image.Image | None:
+        if not url:
+            return None
+        cached = self._image_cache.get(url)
+        if cached is not None:
+            return cached
+        if not url.lower().startswith(("http://", "https://")):
+            return None
+        cache_dir = self.config.output_dir / ".image-cache"
+        try:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+        key = hashlib.sha1(url.encode("utf-8", "ignore")).hexdigest()
+        cache_path = cache_dir / f"{key}.img"
+        image: Image.Image | None = None
+        if cache_path.is_file():
+            try:
+                with Image.open(cache_path) as cached_image:
+                    image = cached_image.convert("RGB").copy()
+            except Exception:
+                image = None
+        if image is None:
+            try:
+                request = urllib.request.Request(
+                    url,
+                    headers={"User-Agent": self.config.user_agent},
+                )
+                with urllib.request.urlopen(request, timeout=8) as response:
+                    data = response.read(6_000_000)
+                with Image.open(io.BytesIO(data)) as downloaded:
+                    image = downloaded.convert("RGB")
+                image.load()
+                try:
+                    image.save(cache_path, format="PNG")
+                except OSError:
+                    pass
+            except Exception as exc:  # noqa: BLE001
+                self.log.debug("图片加载失败 %s: %s", url[:120], exc)
+                image = None
+        self._image_cache[url] = image
+        return image

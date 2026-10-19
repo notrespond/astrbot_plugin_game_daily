@@ -23,7 +23,7 @@ if str(ROOT) not in sys.path:
 from astrbot_plugin_game_daily.ai_service import AIService
 from astrbot_plugin_game_daily.config import PluginConfig
 from astrbot_plugin_game_daily.news_service import DailyReportService
-from astrbot_plugin_game_daily.news_sources import NewsFetcher, build_sources
+from astrbot_plugin_game_daily.news_sources import NewsFetcher, SteamDealFetcher, build_sources
 from astrbot_plugin_game_daily.poster import PosterRenderer
 from astrbot_plugin_game_daily.storage import Storage
 
@@ -71,7 +71,12 @@ async def main() -> int:
 
     storage = Storage(cfg.db_path)
     service = DailyReportService(
-        cfg, storage, fetcher, AIService(cfg), PosterRenderer(cfg)
+        cfg,
+        storage,
+        fetcher,
+        AIService(cfg),
+        PosterRenderer(cfg),
+        deals_fetcher=SteamDealFetcher(cfg),
     )
     report = await service.generate(
         use_sent_filter=False,

@@ -24,7 +24,7 @@
 - AI 负责中文标题润色、简短摘要、分类、重要性评分和同事件合并。
 - 优先使用外部 OpenAI 兼容 Key；没有 Key 时自动使用 AstrBot 当前默认聊天模型。
 - 规则降级：AI 超时、401、返回格式错误、没有 Key 且没有 AstrBot 模型时，仍会生成日报。
-- Pillow 本地生成 16:9 深色中文新闻海报，支持 4～6 条精选新闻、无新闻提示、长标题截断和异常字符清理。
+- Pillow 本地生成 3:4 白色编辑式中文新闻海报，支持 4～6 条新闻缩略图、Steam 四款折扣游戏、无新闻提示、长标题截断和异常字符清理。
 - 使用 AstrBot 原生 `context.cron_manager` 注册每日任务，不另起机器人进程。
 - 提供手动采集、预览、状态、自检命令。
 - 推送目标、时间、时区、新闻源、AI、海报、无新闻策略均可在 AstrBot WebUI 配置。
@@ -246,9 +246,9 @@ AI 安全约束：
 
 | 配置 | 默认 | 说明 |
 | --- | --- | --- |
-| `poster_width` / `poster_height` | `1200` / `675` | 16:9；也可用 1600×900 |
+| `poster_width` / `poster_height` | `1200` / `1600` | 3:4 竖版；宽高比不符时会自动校正高度 |
 | `font_path` | 空 | 自动检测中文字体；也可指定 `.ttf/.ttc/.otf` |
-| `poster_theme` | `dark-neon` | `dark-neon` / `dark-blue` / `dark-crimson` |
+| `poster_theme` | `editorial-white` | 当前固定为白色编辑式设计，仅保留配置兼容 |
 | `output_dir` | 空 | 默认 `data/plugin_data/astrbot_plugin_game_daily/posters` |
 | `keep_posters_days` | `7` | 只清理本插件生成的 `gamedaily-*.png` / `preview-*.png` |
 | `send_caption` | `true` | 图片后附带简短文字摘要 |
@@ -323,6 +323,15 @@ https://api.steampowered.com/ISteamNews/GetNewsForApp/v2/
 
 只保留 Valve 官方 `steam_community_announcements` 条目（`feed_type=1`），第三方聚合文章不会被当作官方公告。
 
+Steam 折扣使用公开商店接口：
+
+```
+https://store.steampowered.com/api/featuredcategories?cc=cn&l=schinese
+https://store.steampowered.com/api/appdetails?appids=<id>&cc=cn&l=schinese
+```
+
+按折扣排序取 4 款，价格、折扣、封面和类型均来自接口；接口不可用时显示“暂无有效折扣数据”，不会编造价格。
+
 > 请遵守各来源的 robots/使用条款和访问频率；插件已内置超时、间隔、并发限制和有限重试。新闻版权归原来源所有，海报只展示标题/短摘要并保留原文链接。
 
 ---
@@ -378,7 +387,7 @@ python -m unittest discover -s astrbot_plugin_game_daily/tests -t . -v
 - 标题/URL/内容指纹去重、时间窗、缺失时间、未来时间；
 - 持久化去重、运行记录、来源健康、运行锁；
 - AI JSON 解析、代码围栏、非法 JSON、网络错误降级、本地 HTTP 模拟 OpenAI 接口；
-- 海报 4/6 条、空海报、长标题、emoji/控制字符、自定义尺寸；
+- 海报 4/6 条、Steam 四款折扣、空海报、长标题、emoji/控制字符、自定义尺寸；
 - 定时任务重复注册清理、卸载删除、payload 参数、失败重试、并发触发跳过。
 
 ### 真实网络冒烟
@@ -401,9 +410,9 @@ python astrbot_plugin_game_daily/tests/manual_smoke.py
 
 已实际验证：
 
-- 69 个单元测试在 Windows Python 3.14 通过；
+- 72 个单元测试在 Windows Python 3.14 通过；
 - 同一套测试在 AstrBot 4.29.0 Docker 容器 / Python 3.12 / Noto CJK 字体下通过；
-- 真实 RSS 抓取（本机与 AWS 悉尼容器）成功获取新闻并生成 1200×675 海报；
+- 真实 RSS 抓取（本机与 AWS 悉尼容器）成功获取新闻，并生成含真实缩略图与 Steam 折扣的 1200×1600 竖版海报；
 - 已安装到 AstrBot 4.29.0 容器并成功加载；无外部 Key 时通过 AstrBot 默认 DeepSeek 模型生成中文标题/摘要海报；
 - 在 AstrBot 容器内成功 `import` 插件入口，并用真实 `AstrBotConfig` + 假 `Context` 完成初始化、注册定时任务、卸载清理。
 

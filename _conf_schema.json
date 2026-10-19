@@ -298,9 +298,9 @@
   "poster_height": {
     "description": "海报高度",
     "type": "int",
-    "hint": "建议与宽度保持 16:9，例如 1200×675、1600×900。",
-    "default": 675,
-    "slider": {"min": 450, "max": 1600, "step": 25}
+    "hint": "严格 3:4 竖版，推荐 1200×1600；宽高比不符时自动校正高度。",
+    "default": 1600,
+    "slider": {"min": 1000, "max": 3200, "step": 25}
   },
   "font_path": {
     "description": "中文字体路径（可选）",
@@ -311,8 +311,9 @@
   "poster_theme": {
     "description": "海报主题",
     "type": "string",
-    "options": ["dark-neon", "dark-blue", "dark-crimson"],
-    "default": "dark-neon"
+    "hint": "当前版本固定为白色编辑式设计，此项目前仅保留兼容。",
+    "options": ["editorial-white"],
+    "default": "editorial-white"
   },
   "output_dir": {
     "description": "海报输出目录",

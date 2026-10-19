@@ -127,6 +127,7 @@ class NewsItem:
     source_weight: float = 1.0
     collected_at: datetime = field(default_factory=utcnow)
     raw_title: str = ""
+    image_url: str = ""
     published_missing: bool = False
     importance: float = 0.0
     ai_title: str = ""
@@ -237,6 +238,45 @@ class NewsItem:
 
 
 @dataclass(slots=True)
+class SteamDeal:
+    app_id: int
+    name: str
+    discount_percent: int
+    original_price_cents: int
+    final_price_cents: int
+    currency: str = "CNY"
+    image_url: str = ""
+    genres: list[str] = field(default_factory=list)
+
+    @property
+    def original_price_text(self) -> str:
+        return _price_text(self.original_price_cents, self.currency)
+
+    @property
+    def final_price_text(self) -> str:
+        return _price_text(self.final_price_cents, self.currency)
+
+    @property
+    def discount_text(self) -> str:
+        return f"-{max(0, min(100, self.discount_percent))}%"
+
+    @property
+    def genres_text(self) -> str:
+        values = [value for value in self.genres if value][:3]
+        return " · ".join(values) if values else "Steam 折扣"
+
+
+def _price_text(cents: int, currency: str) -> str:
+    symbol = {"CNY": "¥", "USD": "$", "EUR": "€"}.get(currency, "")
+    value = max(0, int(cents)) / 100.0
+    if abs(value - round(value)) < 0.005:
+        amount = f"{round(value):d}"
+    else:
+        amount = f"{value:.2f}"
+    return f"{symbol}{amount}"
+
+
+@dataclass(slots=True)
 class SourceReport:
     source_id: str
     name: str
@@ -287,6 +327,7 @@ class ReportResult:
     sent_targets: list[str] = field(default_factory=list)
     failed_targets: list[dict] = field(default_factory=list)
     fatal_source_error: bool = False
+    deals: list[SteamDeal] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:

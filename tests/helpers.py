@@ -20,7 +20,7 @@ def make_config(tmp_path: Path, **overrides) -> PluginConfig:
         "rss_sources": [],
         "ai_api_key": "",
         "poster_width": 1200,
-        "poster_height": 675,
+        "poster_height": 1600,
         "output_dir": str(tmp_path / "posters"),
         "max_news": 6,
         "max_per_source": 2,

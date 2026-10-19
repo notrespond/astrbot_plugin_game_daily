@@ -23,7 +23,7 @@ from xml.etree import ElementTree as ET
 import aiohttp
 
 from .config import PluginConfig
-from .models import NewsItem, normalize_url, utcnow
+from .models import NewsItem, SteamDeal, normalize_url, utcnow
 
 log = logging.getLogger(__name__)
 
@@ -470,6 +470,31 @@ def _extract_categories(entry: ET.Element) -> list[str]:
     return result
 
 
+def _extract_image_url(entry: ET.Element, base_url: str) -> str:
+    """Find the most likely article image without fetching the article page."""
+
+    for element in entry.iter():
+        tag = _local_name(element.tag)
+        if tag not in ("content", "thumbnail", "image", "enclosure"):
+            continue
+        media_type = (element.get("type") or "").lower()
+        if tag == "enclosure" and media_type and not media_type.startswith("image"):
+            continue
+        url = (
+            element.get("url")
+            or element.get("href")
+            or (element.text or "").strip()
+        ).strip()
+        if url and url.lower().startswith(("http://", "https://", "//")):
+            return urljoin(base_url, url)
+    for name in ("description", "summary", "content", "encoded"):
+        raw = _child_text(entry, {name})
+        match = re.search(r"""<img[^>]+src=["']([^"']+)["']""", raw, re.I)
+        if match:
+            return urljoin(base_url, match.group(1))
+    return ""
+
+
 def _sanitize_xml_text(text: str) -> str:
     return re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)
 
@@ -562,6 +587,7 @@ def parse_rss_feed(
             ),
             limit=1600,
         )
+        image_url = _extract_image_url(entry, base_url)
         published_raw = _extract_date_text(entry)
         published_at, missing = parse_datetime_value(published_raw, default_tz)
         if published_at is not None and published_at > collected:
@@ -580,6 +606,7 @@ def parse_rss_feed(
                 source_weight=spec.weight,
                 collected_at=collected,
                 raw_title=title,
+                image_url=image_url,
                 published_missing=missing,
             )
         )
@@ -737,8 +764,17 @@ class NewsFetcher:
                 title = clean_html_text(str(entry.get("title") or ""), limit=400)
                 if not title:
                     continue
-                contents = clean_html_text(
-                    str(entry.get("contents") or ""), limit=1600
+                raw_contents = str(entry.get("contents") or "")
+                contents = clean_html_text(raw_contents, limit=1600)
+                image_match = re.search(
+                    r"""<img[^>]+src=["']([^"']+)["']""", raw_contents, re.I
+                )
+                image_url = (
+                    urljoin(
+                        "https://store.steampowered.com/", image_match.group(1)
+                    )
+                    if image_match
+                    else ""
                 )
                 timestamp = entry.get("date")
                 published_at, missing = parse_datetime_value(
@@ -767,6 +803,7 @@ class NewsFetcher:
                         source_weight=spec.weight,
                         collected_at=now,
                         raw_title=title,
+                        image_url=image_url,
                         published_missing=missing,
                     )
                 )
@@ -836,6 +873,147 @@ class NewsFetcher:
         raise RuntimeError(
             f"请求失败（{urlsplit(url).netloc}）: {last_error}"
         )
+
+
+class SteamDealFetcher:
+    """Fetch real Steam specials (CNY) for the discount section."""
+
+    FEATURED_URL = "https://store.steampowered.com/api/featuredcategories"
+    DETAILS_URL = "https://store.steampowered.com/api/appdetails"
+
+    def __init__(self, config: PluginConfig, logger=None) -> None:
+        self.config = config
+        self.log = logger or log
+
+    async def fetch(self, limit: int = 4) -> list[SteamDeal]:
+        timeout = aiohttp.ClientTimeout(
+            total=self.config.request_timeout,
+            sock_connect=min(10, self.config.request_timeout),
+            sock_read=self.config.request_timeout,
+        )
+        headers = {"User-Agent": self.config.user_agent, "Accept": "application/json"}
+        try:
+            async with aiohttp.ClientSession(
+                timeout=timeout,
+                headers=headers,
+                trust_env=self.config.use_proxy_env,
+            ) as session:
+                featured = await self._get_json(
+                    session,
+                    self.FEATURED_URL,
+                    {"cc": "cn", "l": "schinese"},
+                )
+                items = (featured.get("specials") or {}).get("items") or []
+                candidates: list[dict] = []
+                for item in items:
+                    if not isinstance(item, dict) or not item.get("discounted"):
+                        continue
+                    try:
+                        discount = int(item.get("discount_percent") or 0)
+                        original = int(item.get("original_price") or 0)
+                        final = int(item.get("final_price") or 0)
+                    except (TypeError, ValueError):
+                        continue
+                    if discount <= 0 or original <= 0:
+                        continue
+                    candidates.append(item)
+                candidates.sort(
+                    key=lambda item: (
+                        -int(item.get("discount_percent") or 0),
+                        int(item.get("final_price") or 0),
+                    )
+                )
+                selected = candidates[: max(1, min(8, limit))]
+                detail_results = await asyncio.gather(
+                    *(
+                        self._app_genres(session, item.get("id"))
+                        for item in selected
+                    ),
+                    return_exceptions=True,
+                )
+                deals: list[SteamDeal] = []
+                for item, genres in zip(selected, detail_results):
+                    if isinstance(genres, Exception):
+                        genres = []
+                    image_url = str(
+                        item.get("header_image")
+                        or item.get("large_capsule_image")
+                        or ""
+                    ).strip()
+                    deals.append(
+                        SteamDeal(
+                            app_id=int(item.get("id") or 0),
+                            name=clean_html_text(
+                                str(item.get("name") or ""), limit=120
+                            ),
+                            discount_percent=int(
+                                item.get("discount_percent") or 0
+                            ),
+                            original_price_cents=int(
+                                item.get("original_price") or 0
+                            ),
+                            final_price_cents=int(item.get("final_price") or 0),
+                            currency=str(item.get("currency") or "CNY"),
+                            image_url=image_url,
+                            genres=list(genres or [])[:3],
+                        )
+                    )
+                return [deal for deal in deals if deal.name][:limit]
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            self.log.warning("Steam 折扣获取失败: %s", self.config.redact(str(exc)))
+            return []
+
+    async def _app_genres(
+        self, session: aiohttp.ClientSession, app_id
+    ) -> list[str]:
+        try:
+            app_id = int(app_id)
+        except (TypeError, ValueError):
+            return []
+        data = await self._get_json(
+            session,
+            self.DETAILS_URL,
+            {"appids": str(app_id), "cc": "cn", "l": "schinese"},
+        )
+        entry = data.get(str(app_id)) or {}
+        if not entry.get("success"):
+            return []
+        genres = (entry.get("data") or {}).get("genres") or []
+        result: list[str] = []
+        for genre in genres:
+            if not isinstance(genre, dict):
+                continue
+            name = str(genre.get("description") or genre.get("name") or "").strip()
+            if name and name not in result:
+                result.append(name)
+        return result
+
+    async def _get_json(
+        self,
+        session: aiohttp.ClientSession,
+        url: str,
+        params: dict,
+    ) -> dict:
+        last_error: Exception | None = None
+        for attempt in range(2):
+            try:
+                async with session.get(url, params=params) as response:
+                    if response.status != 200:
+                        raise RuntimeError(f"HTTP {response.status}")
+                    data = await response.read()
+                    if len(data) > 2_000_000:
+                        raise RuntimeError("Steam 响应过大")
+                    parsed = json.loads(data.decode("utf-8", "replace"))
+                    return parsed if isinstance(parsed, dict) else {}
+            except asyncio.CancelledError:
+                raise
+            except (aiohttp.ClientError, asyncio.TimeoutError, RuntimeError) as exc:
+                last_error = exc
+                if attempt == 0:
+                    await asyncio.sleep(1.0)
+        raise RuntimeError(f"Steam API 请求失败: {last_error}")
 
 
 def fetch_result_reports(results: list[FetchResult]):

@@ -26,7 +26,7 @@ from .ai_service import AIService
 from .config import PLUGIN_NAME, PluginConfig
 from .models import ReportResult, ReportStats
 from .news_service import DailyReportService, RunBusyError, text_fallback
-from .news_sources import NewsFetcher, build_sources
+from .news_sources import NewsFetcher, SteamDealFetcher, build_sources
 from .poster import PosterError, PosterRenderer
 from .scheduler import DailyScheduler, format_next_run
 from .storage import Storage
@@ -88,6 +88,7 @@ class GameDailyPlugin(Star):
             self.ai,
             self.poster,
             self.logger,
+            deals_fetcher=SteamDealFetcher(self.cfg, self.logger),
         )
         self.scheduler = DailyScheduler(
             getattr(context, "cron_manager", None),

@@ -25,10 +25,11 @@ DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (compatible; OTAKUsGameDaily/1.0; +https://astrbot.app) "
     "AstrBot-GameDaily/1.0"
 )
-ALLOWED_THEMES = ("dark-neon", "dark-blue", "dark-crimson")
+ALLOWED_THEMES = ("editorial-white",)
 DEFAULT_CATEGORIES = [
     "发售",
     "更新",
+    "评测",
     "免费/福利",
     "折扣",
     "电竞",
@@ -295,9 +296,9 @@ class PluginConfig:
     ai_temperature: float = 0.2
     ai_json_mode: bool = False
     poster_width: int = 1200
-    poster_height: int = 675
+    poster_height: int = 1600
     font_path: str = ""
-    poster_theme: str = "dark-neon"
+    poster_theme: str = "editorial-white"
     output_dir: Path = field(default_factory=Path)
     keep_posters_days: int = 7
     send_caption: bool = True
@@ -389,10 +390,10 @@ class PluginConfig:
         if not ai_key:
             warnings.append("未配置外部 AI API Key，将优先使用 AstrBot 默认聊天模型；模型不可用时回退规则模式。")
 
-        theme = _as_str(get("poster_theme"), "dark-neon") or "dark-neon"
+        theme = _as_str(get("poster_theme"), "editorial-white") or "editorial-white"
         if theme not in ALLOWED_THEMES:
-            log.warning("未知海报主题 %r，已回退到 dark-neon", theme)
-            theme = "dark-neon"
+            log.warning("未知海报主题 %r，已回退到 editorial-white", theme)
+            theme = "editorial-white"
 
         output_raw = _as_str(get("output_dir"))
         if output_raw:
@@ -468,7 +469,7 @@ class PluginConfig:
             ai_temperature=_as_float(get("ai_temperature"), 0.2, 0.0, 1.0),
             ai_json_mode=_as_bool(get("ai_json_mode"), False),
             poster_width=_as_int(get("poster_width"), 1200, 800, 2400),
-            poster_height=_as_int(get("poster_height"), 675, 450, 1600),
+            poster_height=_as_int(get("poster_height"), 1600, 1000, 3200),
             font_path=font_path,
             poster_theme=theme,
             output_dir=out_path,
@@ -482,13 +483,14 @@ class PluginConfig:
             ai_key_source=ai_key_source,
             warnings=warnings,
         )
-        if cfg.poster_width != 1200 or cfg.poster_height != 675:
-            ratio = cfg.poster_width / max(1, cfg.poster_height)
-            if abs(ratio - 16 / 9) > 0.03:
-                cfg.warnings.append(
-                    f"海报尺寸 {cfg.poster_width}x{cfg.poster_height} 不是 16:9，"
-                    "建议使用 1200x675 或 1600x900。"
-                )
+        expected_height = int(round(cfg.poster_width * 4 / 3))
+        if abs(cfg.poster_height - expected_height) > 2:
+            cfg.warnings.append(
+                f"海报改为 3:4 竖版，尺寸已从 "
+                f"{cfg.poster_width}x{cfg.poster_height} 调整为 "
+                f"{cfg.poster_width}x{expected_height}。"
+            )
+            cfg.poster_height = expected_height
         cfg.output_dir.mkdir(parents=True, exist_ok=True)
         return cfg
 

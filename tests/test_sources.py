@@ -25,6 +25,7 @@ RSS_SAMPLE = b"""<?xml version="1.0" encoding="UTF-8"?>
       <link>https://example.com/news/1?utm_source=rss</link>
       <description><![CDATA[<p>Hello <b>world</b> &amp; more.</p>]]></description>
       <content:encoded><![CDATA[<p>Full content here.</p>]]></content:encoded>
+      <enclosure url="https://example.com/image.jpg" type="image/jpeg" length="1" />
       <pubDate>Sun, 18 Oct 2026 08:00:00 +0800</pubDate>
       <category>Games</category>
     </item>
@@ -72,6 +73,7 @@ class SourceParserTests(unittest.TestCase):
         self.assertIn("Hello world", first.summary)
         self.assertIsNotNone(first.published_at)
         self.assertFalse(first.published_missing)
+        self.assertEqual(first.image_url, "https://example.com/image.jpg")
         self.assertEqual(first.category, "综合")
         second = items[1]
         self.assertEqual(second.link, "https://example.com/news/2")

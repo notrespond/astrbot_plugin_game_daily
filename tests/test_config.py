@@ -25,7 +25,7 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(cfg.effective_cron, "30 8 * * *")
             self.assertEqual(cfg.max_news, 6)
             self.assertEqual(cfg.poster_width, 1200)
-            self.assertEqual(cfg.poster_height, 675)
+            self.assertEqual(cfg.poster_height, 1600)
             self.assertTrue(cfg.include_missing_time)
             self.assertFalse(cfg.ai_available)
             self.assertEqual(cfg.ai_key_source, "")
@@ -87,6 +87,13 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(parsed[1].category, "主机")
         self.assertEqual(parsed[1].weight, 1.5)
         self.assertFalse(parsed[2].enabled)
+
+    def test_landscape_size_is_corrected_to_3_4(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = make_config(Path(tmp), poster_width=1200, poster_height=675)
+            self.assertEqual(cfg.poster_width, 1200)
+            self.assertEqual(cfg.poster_height, 1600)
+            self.assertTrue(any("3:4" in warning for warning in cfg.warnings))
 
     def test_output_dir_defaults_under_data_dir(self):
         with tempfile.TemporaryDirectory() as tmp:

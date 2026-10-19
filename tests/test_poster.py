@@ -10,7 +10,7 @@ from PIL import Image
 
 from .helpers import make_config, make_item
 
-from astrbot_plugin_game_daily.models import ReportStats
+from astrbot_plugin_game_daily.models import ReportStats, SteamDeal
 from astrbot_plugin_game_daily.poster import PosterError, PosterRenderer
 
 
@@ -56,7 +56,7 @@ class PosterTests(unittest.TestCase):
         self.assertTrue(Path(path).is_file())
         self.assertGreater(Path(path).stat().st_size, 20_000)
         with Image.open(path) as image:
-            self.assertEqual(image.size, (1200, 675))
+            self.assertEqual(image.size, (1200, 1600))
             self.assertEqual(image.format, "PNG")
 
     def test_long_title_emoji_and_control_characters(self):
@@ -73,19 +73,44 @@ class PosterTests(unittest.TestCase):
         items = [make_item(i) for i in range(1, 5)]
         path = self._render(items)
         with Image.open(path) as image:
-            self.assertEqual(image.size, (1200, 675))
+            self.assertEqual(image.size, (1200, 1600))
 
     def test_empty_poster(self):
         path = self._render([], empty=True)
         self.assertTrue(Path(path).is_file())
         with Image.open(path) as image:
-            self.assertEqual(image.size, (1200, 675))
+            self.assertEqual(image.size, (1200, 1600))
+
+    def test_steam_deals_section(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        cfg = make_config(Path(self.tmp.name))
+        now = datetime(2026, 10, 19, 8, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+        deals = [
+            SteamDeal(1, "测试游戏一", 50, 29800, 14900, genres=["动作", "开放世界"]),
+            SteamDeal(2, "测试游戏二", 67, 24900, 8200, genres=["角色扮演", "剧情"]),
+            SteamDeal(3, "测试游戏三", 75, 4800, 1200, genres=["独立", "探索"]),
+            SteamDeal(4, "测试游戏四", 90, 38400, 3840, genres=["冒险", "魔法"]),
+        ]
+        items = [make_item(i) for i in range(1, 7)]
+        try:
+            path = PosterRenderer(cfg).render(
+                items,
+                self._stats(items),
+                now,
+                ai_used=True,
+                deals=deals,
+            )
+        except PosterError as exc:
+            self.skipTest(f"当前环境没有可用中文字体：{exc}")
+        with Image.open(path) as image:
+            self.assertEqual(image.size, (1200, 1600))
 
     def test_custom_size(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         cfg = make_config(
-            Path(self.tmp.name), poster_width=1600, poster_height=900
+            Path(self.tmp.name), poster_width=900, poster_height=1200
         )
         now = datetime(2026, 10, 18, 8, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
         try:
@@ -96,7 +121,7 @@ class PosterTests(unittest.TestCase):
         except PosterError as exc:
             self.skipTest(f"当前环境没有可用中文字体：{exc}")
         with Image.open(path) as image:
-            self.assertEqual(image.size, (1600, 900))
+            self.assertEqual(image.size, (900, 1200))
 
 
 if __name__ == "__main__":

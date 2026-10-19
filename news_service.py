@@ -69,6 +69,19 @@ _CATEGORY_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
         ),
     ),
     (
+        "评测",
+        (
+            "review",
+            "reviews",
+            "hands-on",
+            "impressions",
+            "preview",
+            "评测",
+            "试玩报告",
+            "上手",
+        ),
+    ),
+    (
         "电竞",
         (
             "esports",
@@ -483,12 +496,14 @@ class DailyReportService:
         poster: PosterRenderer,
         logger=None,
         clock=None,
+        deals_fetcher=None,
     ) -> None:
         self.config = config
         self.storage = storage
         self.fetcher = fetcher
         self.ai = ai
         self.poster = poster
+        self.deals_fetcher = deals_fetcher
         self.log = logger or log
         self._clock = clock or (lambda: datetime.now(config.timezone))
 
@@ -706,6 +721,17 @@ class DailyReportService:
         stats.total_selected = len(selected)
         empty = not selected
 
+        deals = []
+        if make_poster and selected and self.deals_fetcher is not None:
+            try:
+                deals = await self.deals_fetcher.fetch(limit=4)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                self.log.warning(
+                    "Steam 折扣获取失败: %s", self.config.redact(str(exc))
+                )
+
         poster_path = None
         if make_poster and (selected or poster_when_empty):
             try:
@@ -718,6 +744,7 @@ class DailyReportService:
                     empty,
                     prefix,
                     bool(ai_result and ai_result.used),
+                    deals,
                 )
             except PosterError as exc:
                 message = self.config.redact(str(exc))
@@ -748,6 +775,7 @@ class DailyReportService:
             ),
             errors=errors,
             ai_used=bool(ai_result and ai_result.used),
+            deals=deals,
         )
         self.log.info(
             "采集完成：%s，状态=%s，AI=%s",

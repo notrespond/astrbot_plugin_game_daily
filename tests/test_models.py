@@ -6,6 +6,7 @@ from datetime import timezone
 from .helpers import make_item
 
 from astrbot_plugin_game_daily.models import (
+    SteamDeal,
     content_fingerprint,
     ensure_aware,
     normalize_title,
@@ -54,6 +55,13 @@ class ModelTests(unittest.TestCase):
         item = make_item(1)
         kinds = {key.split(":", 1)[0] for key in item.dedupe_keys()}
         self.assertEqual(kinds, {"title", "url", "content"})
+
+    def test_steam_deal_price_text(self):
+        deal = SteamDeal(1, "Test", 50, 29800, 14900)
+        self.assertEqual(deal.discount_text, "-50%")
+        self.assertEqual(deal.original_price_text, "¥298")
+        self.assertEqual(deal.final_price_text, "¥149")
+        self.assertEqual(deal.genres_text, "Steam 折扣")
 
     def test_display_fields_and_merged_sources(self):
         first = make_item(1, title="A")
