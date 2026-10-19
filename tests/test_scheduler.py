@@ -10,7 +10,11 @@ from pathlib import Path
 from .helpers import make_config
 
 from astrbot_plugin_game_daily.models import ReportResult, ReportStats
-from astrbot_plugin_game_daily.scheduler import DailyScheduler, JOB_NAME
+from astrbot_plugin_game_daily.scheduler import (
+    DailyScheduler,
+    JOB_NAME_PREPARE,
+    JOB_NAME_SEND,
+)
 from astrbot_plugin_game_daily.storage import Storage
 
 
@@ -80,30 +84,44 @@ class SchedulerTests(unittest.TestCase):
         self.storage.close()
         self.tmp.cleanup()
 
-    def _scheduler(self, callback=None, **overrides):
+    def _scheduler(self, callback=None, prepare_callback=None, **overrides):
         cfg = make_config(Path(self.tmp.name), **overrides)
         return DailyScheduler(
-            self.cron, cfg, self.storage, callback or self._ok_callback
+            self.cron,
+            cfg,
+            self.storage,
+            prepare_callback or self._ok_callback,
+            callback or self._ok_callback,
         )
 
     async def _ok_callback(self):
         return make_result("ok")
 
+    def _send_handler(self):
+        for job_id, job in self.cron.jobs.items():
+            if job.name == JOB_NAME_SEND:
+                return self.cron.handlers[job_id]
+        raise AssertionError("send job not found")
+
     def test_register_once_and_cleanup_stale(self):
         self.cron.jobs["old"] = FakeJob(
-            "old", JOB_NAME, {"plugin": "astrbot_plugin_game_daily"}
+            "old", "[GameDaily] 每日游戏资讯", {"plugin": "astrbot_plugin_game_daily"}
         )
         self.cron.jobs["other"] = FakeJob("other", "另一个插件", {"plugin": "other"})
-        scheduler = self._scheduler()
+        scheduler = self._scheduler(push_time="08:00")
         asyncio.run(scheduler.start())
         self.assertIn("old", self.cron.deleted)
         self.assertNotIn("other", self.cron.deleted)
-        self.assertEqual(len(self.cron.added), 1)
+        self.assertEqual(len(self.cron.added), 2)
+        names = {job["name"] for job in self.cron.added}
+        self.assertEqual(names, {JOB_NAME_PREPARE, JOB_NAME_SEND})
         asyncio.run(scheduler.start())
-        self.assertEqual(len(self.cron.added), 1)
+        self.assertEqual(len(self.cron.added), 2)
         status = scheduler.status()
         self.assertTrue(status["registered"])
         self.assertIsNotNone(status["next_run"])
+        self.assertIsNotNone(status["next_prepare"])
+        self.assertEqual(status["prepare_cron"], "30 7 * * *")
         asyncio.run(scheduler.stop())
         self.assertEqual(scheduler.status()["job_id"], None)
         self.assertIn("other", self.cron.jobs)
@@ -115,23 +133,33 @@ class SchedulerTests(unittest.TestCase):
         self.assertFalse(scheduler.status()["enabled"])
         asyncio.run(scheduler.stop())
 
-    def test_cron_payload_is_accepted(self):
-        calls = []
+    def test_prepare_and_send_payloads_are_accepted(self):
+        prepare_calls = []
+        send_calls = []
 
-        async def callback():
-            calls.append(1)
+        async def prepare_callback():
+            prepare_calls.append(1)
             return make_result("ok")
 
-        scheduler = self._scheduler(callback=callback)
+        async def send_callback():
+            send_calls.append(1)
+            return make_result("ok")
+
+        scheduler = self._scheduler(
+            callback=send_callback, prepare_callback=prepare_callback
+        )
         asyncio.run(scheduler.start())
-        job_id = next(iter(self.cron.handlers))
-        handler = self.cron.handlers[job_id]
-        result = asyncio.run(handler(plugin="astrbot_plugin_game_daily", kind="game_daily"))
-        self.assertEqual(result.status, "ok")
-        self.assertEqual(calls, [1])
+        for job_id, job in self.cron.jobs.items():
+            handler = self.cron.handlers[job_id]
+            if job.name == JOB_NAME_PREPARE:
+                asyncio.run(handler(plugin="astrbot_plugin_game_daily", kind="prepare"))
+            else:
+                asyncio.run(handler(plugin="astrbot_plugin_game_daily", kind="send"))
+        self.assertEqual(prepare_calls, [1])
+        self.assertEqual(send_calls, [1])
         asyncio.run(scheduler.stop())
 
-    def test_retry_on_failed_result(self):
+    def test_retry_on_failed_send_result(self):
         calls = []
 
         async def callback():
@@ -140,8 +168,7 @@ class SchedulerTests(unittest.TestCase):
 
         scheduler = self._scheduler(callback=callback, retry_times=1)
         asyncio.run(scheduler.start())
-        job_id = next(iter(self.cron.handlers))
-        result = asyncio.run(self.cron.handlers[job_id]())
+        result = asyncio.run(self._send_handler()())
         self.assertEqual(result.status, "ok")
         self.assertEqual(len(calls), 2)
         asyncio.run(scheduler.stop())
@@ -161,10 +188,10 @@ class SchedulerTests(unittest.TestCase):
 
         async def scenario():
             await scheduler.start()
-            job_id = next(iter(self.cron.handlers))
-            first = asyncio.create_task(self.cron.handlers[job_id]())
+            handler = self._send_handler()
+            first = asyncio.create_task(handler())
             await started.wait()
-            second = await self.cron.handlers[job_id]()
+            second = await handler()
             self.assertIsNone(second)
             release.set()
             await first
@@ -173,10 +200,10 @@ class SchedulerTests(unittest.TestCase):
         asyncio.run(scenario())
         self.assertEqual(len(calls), 1)
 
-    def test_stop_removes_job(self):
+    def test_stop_removes_both_jobs(self):
         scheduler = self._scheduler()
         asyncio.run(scheduler.start())
-        self.assertEqual(len(self.cron.jobs), 1)
+        self.assertEqual(len(self.cron.jobs), 2)
         asyncio.run(scheduler.stop())
         self.assertEqual(len(self.cron.jobs), 0)
 

@@ -9,7 +9,7 @@ from __future__ import annotations
 import hashlib
 import re
 import unicodedata
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -336,3 +336,128 @@ class ReportResult:
     @property
     def has_news(self) -> bool:
         return bool(self.items)
+
+
+def _item_to_dict(item: NewsItem) -> dict:
+    return {
+        "source_id": item.source_id,
+        "source": item.source,
+        "title": item.title,
+        "link": item.link,
+        "published_at": item.published_at.isoformat() if item.published_at else None,
+        "summary": item.summary,
+        "category": item.category,
+        "source_weight": item.source_weight,
+        "collected_at": item.collected_at.isoformat(),
+        "raw_title": item.raw_title,
+        "image_url": item.image_url,
+        "published_missing": item.published_missing,
+        "importance": item.importance,
+        "ai_title": item.ai_title,
+        "ai_summary": item.ai_summary,
+        "ai_used": item.ai_used,
+        "merged_sources": list(item.merged_sources),
+        "merged_links": list(item.merged_links),
+        "original_id": item.original_id,
+    }
+
+
+def _item_from_dict(data: dict) -> NewsItem:
+    published = data.get("published_at")
+    collected = data.get("collected_at")
+    return NewsItem(
+        source_id=str(data.get("source_id") or ""),
+        source=str(data.get("source") or ""),
+        title=str(data.get("title") or ""),
+        link=str(data.get("link") or ""),
+        published_at=datetime.fromisoformat(published) if published else None,
+        summary=str(data.get("summary") or ""),
+        category=str(data.get("category") or "综合"),
+        source_weight=float(data.get("source_weight") or 1.0),
+        collected_at=(
+            datetime.fromisoformat(collected) if collected else utcnow()
+        ),
+        raw_title=str(data.get("raw_title") or data.get("title") or ""),
+        image_url=str(data.get("image_url") or ""),
+        published_missing=bool(data.get("published_missing", False)),
+        importance=float(data.get("importance") or 0.0),
+        ai_title=str(data.get("ai_title") or ""),
+        ai_summary=str(data.get("ai_summary") or ""),
+        ai_used=bool(data.get("ai_used", False)),
+        merged_sources=[
+            str(value) for value in (data.get("merged_sources") or [])
+        ],
+        merged_links=[str(value) for value in (data.get("merged_links") or [])],
+        original_id=int(data.get("original_id") or 0),
+    )
+
+
+def prepared_report_to_dict(result: ReportResult, tz) -> dict:
+    started = result.started_at.astimezone(tz)
+    return {
+        "prepared_date": started.date().isoformat(),
+        "prepared_at": result.started_at.isoformat(),
+        "status": result.status,
+        "items": [_item_to_dict(item) for item in result.items],
+        "stats": asdict(result.stats),
+        "source_reports": [asdict(report) for report in result.source_reports],
+        "started_at": result.started_at.isoformat(),
+        "finished_at": result.finished_at.isoformat(),
+        "poster_path": result.poster_path,
+        "caption": result.caption,
+        "errors": list(result.errors),
+        "ai_used": result.ai_used,
+        "fatal_source_error": result.fatal_source_error,
+        "deals": [asdict(deal) for deal in result.deals],
+    }
+
+
+def prepared_report_from_dict(data: dict) -> ReportResult:
+    stats_data = data.get("stats") or {}
+    stats = ReportStats(
+        **{
+            key: value
+            for key, value in stats_data.items()
+            if key in ReportStats.__dataclass_fields__
+        }
+    )
+    reports = [
+        SourceReport(
+            **{
+                key: value
+                for key, value in report.items()
+                if key in SourceReport.__dataclass_fields__
+            }
+        )
+        for report in (data.get("source_reports") or [])
+        if isinstance(report, dict)
+    ]
+    deals = [
+        SteamDeal(
+            **{
+                key: value
+                for key, value in deal.items()
+                if key in SteamDeal.__dataclass_fields__
+            }
+        )
+        for deal in (data.get("deals") or [])
+        if isinstance(deal, dict)
+    ]
+    return ReportResult(
+        status=str(data.get("status") or "failed"),
+        items=[
+            _item_from_dict(item)
+            for item in (data.get("items") or [])
+            if isinstance(item, dict)
+        ],
+        stats=stats,
+        source_reports=reports,
+        started_at=datetime.fromisoformat(str(data.get("started_at"))),
+        finished_at=datetime.fromisoformat(str(data.get("finished_at"))),
+        poster_path=data.get("poster_path"),
+        caption=str(data.get("caption") or ""),
+        errors=[str(value) for value in (data.get("errors") or [])],
+        ai_used=bool(data.get("ai_used", False)),
+        fatal_source_error=bool(data.get("fatal_source_error", False)),
+        deals=deals,
+    )

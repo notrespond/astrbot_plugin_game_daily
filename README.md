@@ -410,7 +410,7 @@ python astrbot_plugin_game_daily/tests/manual_smoke.py
 
 已实际验证：
 
-- 72 个单元测试在 Windows Python 3.14 通过；
+- 73 个单元测试在 Windows Python 3.14 通过；
 - 同一套测试在 AstrBot 4.29.0 Docker 容器 / Python 3.12 / Noto CJK 字体下通过；
 - 真实 RSS 抓取（本机与 AWS 悉尼容器）成功获取新闻，并生成含真实缩略图与 Steam 折扣的 1200×1600 竖版海报；
 - 已安装到 AstrBot 4.29.0 容器并成功加载；无外部 Key 时通过 AstrBot 默认 DeepSeek 模型生成中文标题/摘要海报；

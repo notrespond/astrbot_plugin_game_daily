@@ -408,6 +408,22 @@ class Storage:
             self._conn.execute("DELETE FROM kv WHERE key = ?", (key,))
             self._conn.commit()
 
+    def save_prepared_report(self, payload: dict) -> None:
+        self.kv_set("prepared_report", json.dumps(payload, ensure_ascii=False))
+
+    def load_prepared_report(self) -> dict | None:
+        raw = self.kv_get("prepared_report")
+        if not raw:
+            return None
+        try:
+            value = json.loads(raw)
+        except (TypeError, json.JSONDecodeError):
+            return None
+        return value if isinstance(value, dict) else None
+
+    def clear_prepared_report(self) -> None:
+        self.kv_delete("prepared_report")
+
     # ------------------------------------------------------------------
     # Cross-process run lease
     # ------------------------------------------------------------------

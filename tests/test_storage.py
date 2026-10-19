@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from datetime import timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from .helpers import make_item
 
@@ -11,6 +12,8 @@ from astrbot_plugin_game_daily.models import (
     ReportResult,
     ReportStats,
     SourceReport,
+    prepared_report_from_dict,
+    prepared_report_to_dict,
     utcnow,
 )
 from astrbot_plugin_game_daily.storage import Storage
@@ -92,6 +95,36 @@ class StorageTests(unittest.TestCase):
         self.assertEqual(latest["sent_targets"], ["aiocqhttp:GroupMessage:1"])
         self.assertEqual(latest["source_reports"][1]["error"], "timeout")
         self.assertEqual(latest["items"][0]["category"], "综合")
+
+    def test_prepared_report_roundtrip(self):
+        now = utcnow()
+        item = make_item(1)
+        result = ReportResult(
+            status="ok",
+            items=[item],
+            stats=ReportStats(total_collected=3, total_selected=1),
+            source_reports=[SourceReport("a", "A", True, 3)],
+            started_at=now,
+            finished_at=now,
+            poster_path="/tmp/prepared.png",
+            caption="prepared caption",
+        )
+        tz = ZoneInfo("Asia/Shanghai")
+        payload = prepared_report_to_dict(result, tz)
+        self.storage.save_prepared_report(payload)
+        loaded = self.storage.load_prepared_report()
+        self.assertIsNotNone(loaded)
+        restored = prepared_report_from_dict(loaded)
+        self.assertEqual(restored.status, "ok")
+        self.assertEqual(len(restored.items), 1)
+        self.assertEqual(restored.items[0].title, item.title)
+        self.assertEqual(restored.poster_path, "/tmp/prepared.png")
+        self.assertEqual(restored.stats.total_selected, 1)
+        self.assertEqual(
+            loaded["prepared_date"], now.astimezone(tz).date().isoformat()
+        )
+        self.storage.clear_prepared_report()
+        self.assertIsNone(self.storage.load_prepared_report())
 
     def test_source_health(self):
         self.storage.record_source_health(

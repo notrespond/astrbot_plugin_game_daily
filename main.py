@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import os
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable
 
@@ -24,7 +24,7 @@ from astrbot.api.star import Context, Star
 
 from .ai_service import AIService
 from .config import PLUGIN_NAME, PluginConfig
-from .models import ReportResult, ReportStats
+from .models import ReportResult, ReportStats, prepared_report_from_dict, prepared_report_to_dict
 from .news_service import DailyReportService, RunBusyError, text_fallback
 from .news_sources import NewsFetcher, SteamDealFetcher, build_sources
 from .poster import PosterError, PosterRenderer
@@ -94,6 +94,7 @@ class GameDailyPlugin(Star):
             getattr(context, "cron_manager", None),
             self.cfg,
             self.storage,
+            self._prepare_pipeline,
             self._scheduled_pipeline,
             self.logger,
         )
@@ -300,16 +301,116 @@ class GameDailyPlugin(Star):
     # ------------------------------------------------------------------
     # Scheduled pipeline (called by AstrBot cron manager)
     # ------------------------------------------------------------------
-    async def _scheduled_pipeline(self) -> ReportResult:
+    async def _prepare_pipeline(self) -> ReportResult:
+        """Generate and persist the report ~30 minutes before sending."""
+
         started = datetime.now(self.cfg.timezone)
         try:
-            async with self.service.exclusive("scheduled"):
+            async with self.service.exclusive("prepare"):
                 result = await self.service.generate(
                     mode="scheduled",
                     use_sent_filter=True,
                     make_poster=True,
                     poster_when_empty=False,
                 )
+                payload = prepared_report_to_dict(result, self.cfg.timezone)
+                payload["prepared_at"] = datetime.now(
+                    self.cfg.timezone
+                ).isoformat()
+                await asyncio.to_thread(
+                    self.storage.save_prepared_report, payload
+                )
+                self.logger.info(
+                    "日报预生成完成：状态=%s，新闻=%s，海报=%s；等待到点发送",
+                    result.status,
+                    len(result.items),
+                    result.poster_path,
+                )
+                return result
+        except RunBusyError as exc:
+            self.logger.warning("日报预生成跳过：%s", exc)
+            return ReportResult(
+                status="failed",
+                items=[],
+                stats=ReportStats(),
+                source_reports=[],
+                started_at=started,
+                finished_at=datetime.now(self.cfg.timezone),
+                errors=[str(exc)],
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            message = self.cfg.redact(f"{type(exc).__name__}: {exc}")
+            self.logger.error("日报预生成异常：%s", message, exc_info=True)
+            return ReportResult(
+                status="failed",
+                items=[],
+                stats=ReportStats(),
+                source_reports=[],
+                started_at=started,
+                finished_at=datetime.now(self.cfg.timezone),
+                errors=[message],
+            )
+
+    async def _load_prepared_result(self) -> ReportResult | None:
+        payload = await asyncio.to_thread(self.storage.load_prepared_report)
+        if not payload:
+            return None
+        prepared_at_raw = payload.get("prepared_at")
+        try:
+            prepared_at = datetime.fromisoformat(str(prepared_at_raw))
+            if prepared_at.tzinfo is None:
+                prepared_at = prepared_at.replace(tzinfo=self.cfg.timezone)
+            age = (datetime.now(self.cfg.timezone) - prepared_at).total_seconds()
+        except (TypeError, ValueError):
+            age = 999999
+        if age < 0 or age > 3 * 3600:
+            self.logger.warning("预生成日报已过期（%.0f 秒前），改为现场生成", age)
+            return None
+        try:
+            return prepared_report_from_dict(payload)
+        except Exception:
+            self.logger.warning("预生成日报数据损坏，改为现场生成", exc_info=True)
+            return None
+
+    async def _clear_prepared(self) -> None:
+        try:
+            await asyncio.to_thread(self.storage.clear_prepared_report)
+        except Exception:
+            self.logger.warning("清理预生成日报失败", exc_info=True)
+
+    async def _scheduled_pipeline(self) -> ReportResult:
+        """Send the prepared poster at the configured time."""
+
+        started = datetime.now(self.cfg.timezone)
+        try:
+            async with self.service.exclusive("scheduled"):
+                result = await self._load_prepared_result()
+                if result is None:
+                    self.logger.warning("没有可用预生成日报，现场生成后发送")
+                    result = await self.service.generate(
+                        mode="scheduled",
+                        use_sent_filter=True,
+                        make_poster=True,
+                        poster_when_empty=False,
+                    )
+                result.finished_at = datetime.now(self.cfg.timezone)
+
+                # If a manual push already sent the prepared stories, avoid a
+                # duplicate scheduled message.
+                if result.items:
+                    _unsent, dropped = await asyncio.to_thread(
+                        self.storage.filter_unsent, result.items
+                    )
+                    if dropped:
+                        self.logger.info(
+                            "预生成日报中的 %s 条新闻已被手动推送，跳过本次定时重复发送",
+                            dropped,
+                        )
+                        await self._clear_prepared()
+                        return result
+
                 if result.fatal_source_error:
                     text = (
                         "游戏日报生成失败：新闻源均不可用或配置错误。\n"
@@ -322,7 +423,9 @@ class GameDailyPlugin(Star):
                         result.sent_targets = await self._send_text(
                             self._targets(), self.cfg.redact(text)
                         )
-                    await self.service.finalize_run(result, "scheduled")
+                        await self._clear_prepared()
+                    if final_attempt:
+                        await self.service.finalize_run(result, "scheduled")
                     return result
 
                 if not result.items:
@@ -334,6 +437,15 @@ class GameDailyPlugin(Star):
                     else:
                         self.logger.info("今日无合格新闻，按配置跳过推送")
                     await self.service.finalize_run(result, "scheduled")
+                    await self._clear_prepared()
+                    return result
+
+                targets = self._targets()
+                if not targets:
+                    result.errors.append("未配置 push_targets，定时推送未发送。")
+                    self.logger.warning("未配置 push_targets，跳过定时推送")
+                    await self.service.finalize_run(result, "scheduled")
+                    await self._clear_prepared()
                     return result
 
                 sent, failed = await self._send_targets(result)
@@ -341,12 +453,18 @@ class GameDailyPlugin(Star):
                 result.failed_targets = failed
                 if sent:
                     await self.service.mark_sent(result)
+                if failed and not sent:
+                    result.status = "failed"
+                    result.errors.append("所有推送目标发送失败")
+                    await self.service.finalize_run(result, "scheduled")
+                    return result
                 await self.service.finalize_run(result, "scheduled")
                 await self.service.purge_old_records()
+                await self._clear_prepared()
                 return result
         except RunBusyError as exc:
             self.logger.warning("定时日报跳过：%s", exc)
-            synthetic = ReportResult(
+            return ReportResult(
                 status="failed",
                 items=[],
                 stats=ReportStats(),
@@ -355,13 +473,12 @@ class GameDailyPlugin(Star):
                 finished_at=datetime.now(self.cfg.timezone),
                 errors=[str(exc)],
             )
-            return synthetic
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001
             message = self.cfg.redact(f"{type(exc).__name__}: {exc}")
             self.logger.error("定时日报异常：%s", message, exc_info=True)
-            synthetic = ReportResult(
+            return ReportResult(
                 status="failed",
                 items=[],
                 stats=ReportStats(),
@@ -370,11 +487,6 @@ class GameDailyPlugin(Star):
                 finished_at=datetime.now(self.cfg.timezone),
                 errors=[message],
             )
-            try:
-                await self.service.finalize_run(synthetic, "scheduled")
-            except Exception:
-                pass
-            return synthetic
 
     # ------------------------------------------------------------------
     # Command helpers
@@ -490,7 +602,8 @@ class GameDailyPlugin(Star):
                     f"({self.cfg.timezone_name}) · Cron {scheduler_status['cron']}"
                 )
                 lines.append(
-                    f"下次执行：{format_next_run(scheduler_status['next_run'])}"
+                    f"下次预生成：{format_next_run(scheduler_status.get('next_prepare'))}"
+                    f" · 下次发送：{format_next_run(scheduler_status['next_run'])}"
                 )
             else:
                 lines.append("定时推送：已关闭（enabled=false）")
