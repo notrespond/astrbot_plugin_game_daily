@@ -47,6 +47,7 @@ COLOR_ACCENT = (40, 185, 176)
 COLOR_ACCENT_SOFT = (232, 248, 246)
 COLOR_STEAM = (33, 136, 56)
 COLOR_TAG_BG = (240, 242, 244)
+_STEAM_ICON_PATH = Path(__file__).resolve().parent / "assets" / "steam_icon.png"
 
 
 def _px(value: float, scale: float) -> int:
@@ -419,6 +420,54 @@ def _cover_image(
     return result
 
 
+def _draw_steam_icon(
+    draw: ImageDraw.ImageDraw,
+    x: int,
+    y: int,
+    size: int,
+) -> None:
+    """Draw a compact, brand-recognisable Steam mark without external assets."""
+
+    size = max(12, size)
+    width = max(1, int(round(size * 0.075)))
+    pad = max(1, width)
+    draw.ellipse(
+        [x + pad, y + pad, x + size - pad, y + size - pad],
+        outline=COLOR_TEXT,
+        width=width,
+    )
+    small_r = max(2, int(round(size * 0.14)))
+    small_x = x + int(round(size * 0.28))
+    small_y = y + int(round(size * 0.72))
+    draw.ellipse(
+        [
+            small_x - small_r,
+            small_y - small_r,
+            small_x + small_r,
+            small_y + small_r,
+        ],
+        fill=COLOR_TEXT,
+    )
+    upper_r = max(2, int(round(size * 0.15)))
+    upper_x = x + int(round(size * 0.68))
+    upper_y = y + int(round(size * 0.32))
+    draw.ellipse(
+        [
+            upper_x - upper_r,
+            upper_y - upper_r,
+            upper_x + upper_r,
+            upper_y + upper_r,
+        ],
+        outline=COLOR_TEXT,
+        width=width,
+    )
+    draw.line(
+        [(small_x, small_y), (upper_x, upper_y)],
+        fill=COLOR_TEXT,
+        width=width,
+    )
+
+
 def _draw_text_cover(
     image: Image.Image,
     rect: tuple[int, int, int, int],
@@ -469,6 +518,7 @@ class PosterRenderer:
         self._font_book: FontBook | None = None
         self._lock = threading.RLock()
         self._image_cache: dict[str, Image.Image | None] = {}
+        self._steam_icon_cache: dict[int, Image.Image | None] = {}
 
     def _fonts(self) -> FontBook:
         with self._lock:
@@ -550,7 +600,7 @@ class PosterRenderer:
             self._draw_empty(draw, width, height, s, fonts)
         else:
             self._draw_news(draw, width, s, fonts, items[:6], images, now_local)
-            self._draw_deals(draw, width, s, fonts, deals, images)
+            self._draw_deals(image, draw, width, s, fonts, deals, images)
         self._draw_footer(draw, width, height, s, fonts)
 
         output_dir = self.config.output_dir
@@ -820,6 +870,7 @@ class PosterRenderer:
     # ------------------------------------------------------------------
     def _draw_deals(
         self,
+        image: Image.Image,
         draw: ImageDraw.ImageDraw,
         width: int,
         s: float,
@@ -829,27 +880,16 @@ class PosterRenderer:
     ) -> None:
         left = _px(54, s)
         right = width - left
-        section_y = _px(1150, s)
+        section_y = _px(1178, s)
         draw.line([(left, section_y), (right, section_y)], fill=COLOR_RULE, width=1)
 
         icon_size = _px(24, s)
-        icon_y = _px(1174, s)
-        draw.rounded_rectangle(
-            [left, icon_y, left + icon_size, icon_y + icon_size],
-            radius=_px(4, s),
-            fill=COLOR_TEXT,
-        )
-        icon_font = fonts.font(14 * s, bold=True)
-        ib = _text_bbox(draw, "S", icon_font)
-        draw.text(
-            (
-                left + (icon_size - (ib[2] - ib[0])) / 2,
-                icon_y + (icon_size - (ib[3] - ib[1])) / 2 - ib[1],
-            ),
-            "S",
-            font=icon_font,
-            fill=COLOR_BG,
-        )
+        icon_y = _px(1202, s)
+        steam_icon = self._steam_icon(icon_size)
+        if steam_icon is not None:
+            image.paste(steam_icon, (left, icon_y), steam_icon)
+        else:
+            _draw_steam_icon(draw, left, icon_y, icon_size)
         heading_font = fonts.font(24 * s, bold=True)
         draw.text(
             (left + _px(36, s), icon_y - _px(2, s)),
@@ -867,7 +907,7 @@ class PosterRenderer:
             fill=COLOR_MUTED,
         )
 
-        cards_top = _px(1218, s)
+        cards_top = _px(1260, s)
         gap = _px(18, s)
         card_w = int((right - left - gap * 3) / 4)
         if not deals:
@@ -937,8 +977,13 @@ class PosterRenderer:
             radius=_px(2, s),
             fill=COLOR_STEAM,
         )
+        tag_text_y = (
+            price_y
+            + (tag_h - (tag_bbox[3] - tag_bbox[1])) / 2
+            - tag_bbox[1]
+        )
         draw.text(
-            (x + _px(5, s), price_y + _px(3, s)),
+            (x + _px(5, s), tag_text_y),
             tag_text,
             font=discount_font,
             fill=COLOR_BG,
@@ -950,10 +995,11 @@ class PosterRenderer:
         old_y = price_y + _px(3, s)
         old_bbox = _text_bbox(draw, old_text, old_font)
         draw.text((old_x, old_y), old_text, font=old_font, fill=COLOR_MUTED)
+        strike_y = old_y + (old_bbox[1] + old_bbox[3]) / 2
         draw.line(
             [
-                (old_x, old_y + (old_bbox[3] - old_bbox[1]) // 2 + 1),
-                (old_x + (old_bbox[2] - old_bbox[0]), old_y + (old_bbox[3] - old_bbox[1]) // 2 + 1),
+                (old_x, strike_y),
+                (old_x + (old_bbox[2] - old_bbox[0]), strike_y),
             ],
             fill=COLOR_MUTED,
             width=1,
@@ -1026,7 +1072,7 @@ class PosterRenderer:
     ) -> None:
         left = _px(54, s)
         right = width - left
-        line_y = height - _px(70, s)
+        line_y = height - _px(55, s)
         draw.line([(left, line_y), (right, line_y)], fill=COLOR_RULE, width=1)
 
         icon_y = line_y + _px(18, s)
@@ -1066,6 +1112,21 @@ class PosterRenderer:
     # ------------------------------------------------------------------
     # Images
     # ------------------------------------------------------------------
+    def _steam_icon(self, size: int) -> Image.Image | None:
+        size = max(12, int(size))
+        if size in self._steam_icon_cache:
+            return self._steam_icon_cache[size]
+        icon = None
+        try:
+            with Image.open(_STEAM_ICON_PATH) as source:
+                icon = source.convert("RGBA").resize(
+                    (size, size), Image.Resampling.LANCZOS
+                )
+        except Exception:
+            icon = None
+        self._steam_icon_cache[size] = icon
+        return icon
+
     def _preload_images(
         self,
         items: list[NewsItem],

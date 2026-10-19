@@ -1,0 +1,8 @@
+Steam icon
+===========
+
+Source: Simple Icons (steam), rendered locally from the SVG icon.
+License: CC0 1.0 Universal.
+
+"Steam" and the Steam logo are trademarks of Valve Corporation.
+The icon is used only to identify the Steam discount section.
