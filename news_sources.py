@@ -10,6 +10,7 @@ import asyncio
 import html
 import json
 import logging
+import math
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -904,90 +905,187 @@ class SteamDealFetcher:
                     {"cc": "cn", "l": "schinese"},
                 )
                 items = (featured.get("specials") or {}).get("items") or []
-                candidates: list[dict] = []
+                candidates_by_id: dict[int, dict] = {}
                 for item in items:
                     if not isinstance(item, dict) or not item.get("discounted"):
                         continue
                     try:
+                        app_id = int(item.get("id") or 0)
                         discount = int(item.get("discount_percent") or 0)
                         original = int(item.get("original_price") or 0)
                         final = int(item.get("final_price") or 0)
                     except (TypeError, ValueError):
                         continue
-                    if discount <= 0 or original <= 0:
+                    if app_id <= 0 or discount <= 0 or original <= 0:
                         continue
-                    candidates.append(item)
+                    candidates_by_id.setdefault(app_id, item)
+                candidates = list(candidates_by_id.values())
                 candidates.sort(
                     key=lambda item: (
                         -int(item.get("discount_percent") or 0),
                         int(item.get("final_price") or 0),
                     )
                 )
-                selected = candidates[: max(1, min(8, limit))]
+                # Enrich a wider pool than the final four.  The service then
+                # rotates against recently shown games, so this pool is the
+                # source for both review scoring and daily variety.
+                pool_limit = min(16, max(12, limit))
+                selected = candidates[:pool_limit]
+                semaphore = asyncio.Semaphore(4)
+
+                async def enrich(item: dict) -> dict:
+                    async with semaphore:
+                        try:
+                            return await self._app_meta(session, item.get("id"))
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception as exc:  # noqa: BLE001
+                            self.log.debug("Steam 游戏详情失败: %s", exc)
+                            return {}
+
                 detail_results = await asyncio.gather(
-                    *(
-                        self._app_genres(session, item.get("id"))
-                        for item in selected
-                    ),
+                    *(enrich(item) for item in selected),
                     return_exceptions=True,
                 )
                 deals: list[SteamDeal] = []
-                for item, genres in zip(selected, detail_results):
-                    if isinstance(genres, Exception):
-                        genres = []
+                for item, detail in zip(selected, detail_results):
+                    if not isinstance(detail, dict):
+                        detail = {}
                     image_url = str(
                         item.get("header_image")
                         or item.get("large_capsule_image")
                         or ""
                     ).strip()
-                    deals.append(
-                        SteamDeal(
-                            app_id=int(item.get("id") or 0),
-                            name=clean_html_text(
-                                str(item.get("name") or ""), limit=120
-                            ),
-                            discount_percent=int(
-                                item.get("discount_percent") or 0
-                            ),
-                            original_price_cents=int(
-                                item.get("original_price") or 0
-                            ),
-                            final_price_cents=int(item.get("final_price") or 0),
-                            currency=str(item.get("currency") or "CNY"),
-                            image_url=image_url,
-                            genres=list(genres or [])[:3],
-                        )
+                    deal = SteamDeal(
+                        app_id=int(item.get("id") or 0),
+                        name=clean_html_text(
+                            str(item.get("name") or ""), limit=120
+                        ),
+                        discount_percent=int(
+                            item.get("discount_percent") or 0
+                        ),
+                        original_price_cents=int(
+                            item.get("original_price") or 0
+                        ),
+                        final_price_cents=int(item.get("final_price") or 0),
+                        currency=str(item.get("currency") or "CNY"),
+                        image_url=image_url,
+                        genres=list(detail.get("genres") or [])[:3],
+                        review_positive=int(detail.get("review_positive") or 0),
+                        review_negative=int(detail.get("review_negative") or 0),
+                        review_total=int(detail.get("review_total") or 0),
+                        review_score=int(detail.get("review_score") or 0),
+                        review_desc=str(detail.get("review_desc") or ""),
+                        metacritic=detail.get("metacritic"),
+                        recommendations=int(
+                            detail.get("recommendations") or 0
+                        ),
                     )
-                return [deal for deal in deals if deal.name][:limit]
+                    if deal.name:
+                        deals.append(deal)
+                deals.sort(key=self._deal_score, reverse=True)
+                return deals[:limit]
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001
             self.log.warning("Steam 折扣获取失败: %s", self.config.redact(str(exc)))
             return []
 
-    async def _app_genres(
+    @staticmethod
+    def _deal_score(deal: SteamDeal) -> float:
+        """Rank sales by real positive signals, not discount alone."""
+
+        discount = min(1.0, max(0, deal.discount_percent) / 100.0)
+        positive = deal.positive_ratio
+        volume = min(1.0, math.log10(deal.best_review_count + 1) / 5.0)
+        metacritic = (
+            min(100, max(0, deal.metacritic)) / 100.0
+            if isinstance(deal.metacritic, int)
+            else 0.6
+        )
+        steam_review = (
+            min(1.0, max(0, deal.review_score) / 9.0)
+            if deal.review_score
+            else 0.0
+        )
+        return (
+            discount * 25.0
+            + positive * 35.0
+            + volume * 20.0
+            + metacritic * 10.0
+            + steam_review * 10.0
+        )
+
+    async def _app_meta(
         self, session: aiohttp.ClientSession, app_id
-    ) -> list[str]:
+    ) -> dict:
         try:
             app_id = int(app_id)
         except (TypeError, ValueError):
-            return []
-        data = await self._get_json(
-            session,
-            self.DETAILS_URL,
-            {"appids": str(app_id), "cc": "cn", "l": "schinese"},
-        )
-        entry = data.get(str(app_id)) or {}
-        if not entry.get("success"):
-            return []
-        genres = (entry.get("data") or {}).get("genres") or []
-        result: list[str] = []
-        for genre in genres:
-            if not isinstance(genre, dict):
-                continue
-            name = str(genre.get("description") or genre.get("name") or "").strip()
-            if name and name not in result:
-                result.append(name)
+            return {}
+        result: dict = {
+            "genres": [],
+            "metacritic": None,
+            "recommendations": 0,
+            "review_positive": 0,
+            "review_negative": 0,
+            "review_total": 0,
+            "review_score": 0,
+            "review_desc": "",
+        }
+        try:
+            data = await self._get_json(
+                session,
+                self.DETAILS_URL,
+                {"appids": str(app_id), "cc": "cn", "l": "schinese"},
+            )
+            entry = data.get(str(app_id)) or {}
+            details = entry.get("data") or {}
+            genres = details.get("genres") or []
+            genre_values: list[str] = []
+            for genre in genres:
+                if not isinstance(genre, dict):
+                    continue
+                name = str(
+                    genre.get("description") or genre.get("name") or ""
+                ).strip()
+                if name and name not in genre_values:
+                    genre_values.append(name)
+            result["genres"] = genre_values[:3]
+            metacritic = details.get("metacritic") or {}
+            score = metacritic.get("score") if isinstance(metacritic, dict) else None
+            if isinstance(score, (int, float)):
+                result["metacritic"] = int(score)
+            recommendations = details.get("recommendations") or {}
+            total = (
+                recommendations.get("total")
+                if isinstance(recommendations, dict)
+                else 0
+            )
+            result["recommendations"] = int(total or 0)
+        except Exception:
+            pass
+        try:
+            reviews = await self._get_json(
+                session,
+                f"https://store.steampowered.com/appreviews/{app_id}",
+                {
+                    "json": "1",
+                    "language": "all",
+                    "purchase_type": "all",
+                    "num_per_page": "0",
+                },
+            )
+            summary = reviews.get("query_summary") or {}
+            result["review_positive"] = int(summary.get("total_positive") or 0)
+            result["review_negative"] = int(summary.get("total_negative") or 0)
+            result["review_total"] = int(summary.get("total_reviews") or 0)
+            result["review_score"] = int(summary.get("review_score") or 0)
+            result["review_desc"] = str(
+                summary.get("review_score_desc") or ""
+            )
+        except Exception:
+            pass
         return result
 
     async def _get_json(

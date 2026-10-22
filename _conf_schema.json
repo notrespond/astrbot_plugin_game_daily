@@ -345,5 +345,12 @@
     "hint": "防止重启后重复推送；过期记录会被清理。",
     "default": 30,
     "slider": {"min": 1, "max": 3650, "step": 1}
+  },
+  "steam_deal_cooldown_days": {
+    "description": "Steam 折扣游戏轮换天数",
+    "type": "int",
+    "hint": "最近 N 天展示过的折扣游戏尽量不再重复；候选不足时按最久未展示补齐。",
+    "default": 7,
+    "slider": {"min": 1, "max": 30, "step": 1}
   }
 }

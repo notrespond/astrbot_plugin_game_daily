@@ -724,7 +724,14 @@ class DailyReportService:
         deals = []
         if make_poster and selected and self.deals_fetcher is not None:
             try:
-                deals = await self.deals_fetcher.fetch(limit=4)
+                fetched_deals = await self.deals_fetcher.fetch(limit=12)
+                deals = await asyncio.to_thread(
+                    self.storage.select_deals,
+                    fetched_deals,
+                    4,
+                    self.config.steam_deal_cooldown_days,
+                    started_at,
+                )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001
@@ -794,9 +801,15 @@ class DailyReportService:
             self.log.warning("保存运行记录失败", exc_info=True)
 
     async def mark_sent(self, result: ReportResult) -> None:
-        if not result.items:
-            return
-        await asyncio.to_thread(self.storage.mark_sent, result.items)
+        if result.items:
+            await asyncio.to_thread(self.storage.mark_sent, result.items)
+        if result.deals:
+            try:
+                await asyncio.to_thread(
+                    self.storage.mark_deals_shown, result.deals
+                )
+            except Exception:
+                self.log.warning("记录折扣轮换历史失败", exc_info=True)
 
     async def purge_old_records(self) -> None:
         try:

@@ -27,6 +27,7 @@
 - 优先使用外部 OpenAI 兼容 Key；没有 Key 时自动使用 AstrBot 当前默认聊天模型。
 - 规则降级：AI 超时、401、返回格式错误、没有 Key 且没有 AstrBot 模型时，仍会生成日报。
 - Pillow 本地生成 3:4 白色编辑式中文新闻海报，支持 4～6 条新闻缩略图、Steam 四款折扣游戏、无新闻提示、长标题截断和异常字符清理。
+- Steam 折扣按折扣力度、好评率、评论数量、Metacritic 和推荐数综合评分，并结合近期展示历史轮换，尽量每天不同。
 - 使用 AstrBot 原生 `context.cron_manager` 注册每日任务，不另起机器人进程。
 - 提供手动采集、预览、状态、自检命令。
 - 推送目标、时间、时区、新闻源、AI、海报、无新闻策略均可在 AstrBot WebUI 配置。
@@ -256,6 +257,7 @@ AI 安全约束：
 | `send_caption` | `true` | 图片后附带简短文字摘要 |
 | `send_text_fallback` | `true` | 海报失败时发送文字版 |
 | `dedupe_retention_days` | `30` | 去重记录保留天数 |
+| `steam_deal_cooldown_days` | `7` | 同一款折扣游戏尽量不在这 N 天内重复出现 |
 
 字体：
 
@@ -332,7 +334,7 @@ https://store.steampowered.com/api/featuredcategories?cc=cn&l=schinese
 https://store.steampowered.com/api/appdetails?appids=<id>&cc=cn&l=schinese
 ```
 
-按折扣排序取 4 款，价格、折扣、封面和类型均来自接口；接口不可用时显示“暂无有效折扣数据”，不会编造价格。
+折扣候选按综合评分排序后取 4 款：折扣力度、好评率、评论数量、Metacritic 评分和推荐数都会参与计算，并结合最近展示历史做轮换。价格、折扣、封面、类型和评论数据均来自接口；接口不可用时显示“暂无有效折扣数据”，不会编造价格。
 
 > 请遵守各来源的 robots/使用条款和访问频率；插件已内置超时、间隔、并发限制和有限重试。新闻版权归原来源所有，海报只展示标题/短摘要并保留原文链接。
 
@@ -412,7 +414,7 @@ python astrbot_plugin_game_daily/tests/manual_smoke.py
 
 已实际验证：
 
-- 73 个单元测试在 Windows Python 3.14 通过；
+- 74 个单元测试在 Windows Python 3.14 通过；
 - 同一套测试在 AstrBot 4.29.0 Docker 容器 / Python 3.12 / Noto CJK 字体下通过；
 - 真实 RSS 抓取（本机与 AWS 悉尼容器）成功获取新闻，并生成含真实缩略图与 Steam 折扣的 1200×1600 竖版海报；
 - 已安装到 AstrBot 4.29.0 容器并成功加载；无外部 Key 时通过 AstrBot 默认 DeepSeek 模型生成中文标题/摘要海报；

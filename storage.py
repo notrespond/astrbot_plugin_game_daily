@@ -21,7 +21,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable
 
-from .models import NewsItem, ReportResult, SourceReport, utcnow
+from .models import NewsItem, ReportResult, SourceReport, SteamDeal, utcnow
 
 SCHEMA_VERSION = 1
 
@@ -78,6 +78,12 @@ class Storage:
                 );
                 CREATE INDEX IF NOT EXISTS idx_sent_news_last_sent
                     ON sent_news(last_sent_at);
+
+                CREATE TABLE IF NOT EXISTS deal_history (
+                    app_id INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    last_shown_at TEXT NOT NULL
+                );
 
                 CREATE TABLE IF NOT EXISTS runs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -231,6 +237,78 @@ class Storage:
             )
             self._conn.commit()
             return int(cursor.rowcount or 0)
+
+    # ------------------------------------------------------------------
+    # Steam deal rotation
+    # ------------------------------------------------------------------
+    def select_deals(
+        self,
+        deals: list[SteamDeal],
+        limit: int = 4,
+        cooldown_days: int = 7,
+        now: datetime | None = None,
+    ) -> list[SteamDeal]:
+        """Prefer deals that have not appeared in the recent cooldown window.
+
+        If there are not enough unseen deals, fill the remainder with the
+        least-recently-shown ones instead of returning fewer than ``limit``.
+        """
+
+        if not deals:
+            return []
+        limit = max(1, min(4, limit))
+        current = now or utcnow()
+        cutoff = _iso(current - timedelta(days=max(1, cooldown_days)))
+        unique: dict[int, SteamDeal] = {}
+        for deal in deals:
+            unique.setdefault(deal.app_id, deal)
+        recent: dict[int, str] = {}
+        with self._lock:
+            assert self._conn is not None
+            rows = self._conn.execute(
+                "SELECT app_id, last_shown_at FROM deal_history WHERE last_shown_at >= ?",
+                (cutoff,),
+            ).fetchall()
+            recent = {
+                int(row["app_id"]): str(row["last_shown_at"]) for row in rows
+            }
+
+        fresh = [deal for app_id, deal in unique.items() if app_id not in recent]
+        selected = fresh[:limit]
+        if len(selected) < limit:
+            selected_ids = {deal.app_id for deal in selected}
+            candidates = [
+                deal
+                for app_id, deal in unique.items()
+                if app_id not in selected_ids
+            ]
+            candidates.sort(
+                key=lambda deal: recent.get(deal.app_id, "0000")
+            )
+            selected.extend(candidates[: limit - len(selected)])
+        return selected[:limit]
+
+    def mark_deals_shown(
+        self,
+        deals: list[SteamDeal],
+        now: datetime | None = None,
+    ) -> None:
+        if not deals:
+            return
+        timestamp = _iso(now or utcnow())
+        with self._lock:
+            assert self._conn is not None
+            self._conn.executemany(
+                """
+                INSERT INTO deal_history(app_id, name, last_shown_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(app_id) DO UPDATE SET
+                    name = excluded.name,
+                    last_shown_at = excluded.last_shown_at
+                """,
+                [(deal.app_id, deal.name[:200], timestamp) for deal in deals],
+            )
+            self._conn.commit()
 
     # ------------------------------------------------------------------
     # Run history

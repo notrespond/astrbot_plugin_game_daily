@@ -12,6 +12,7 @@ from astrbot_plugin_game_daily.models import (
     ReportResult,
     ReportStats,
     SourceReport,
+    SteamDeal,
     prepared_report_from_dict,
     prepared_report_to_dict,
     utcnow,
@@ -125,6 +126,29 @@ class StorageTests(unittest.TestCase):
         )
         self.storage.clear_prepared_report()
         self.assertIsNone(self.storage.load_prepared_report())
+
+    def test_deal_rotation_prefers_unseen_games(self):
+        now = utcnow()
+        deals = [
+            SteamDeal(index, f"Game {index}", 50, 10000, 5000)
+            for index in range(1, 9)
+        ]
+        first = self.storage.select_deals(deals, 4, 7, now)
+        self.assertEqual([deal.app_id for deal in first], [1, 2, 3, 4])
+        self.storage.mark_deals_shown(first, now)
+        second = self.storage.select_deals(
+            deals, 4, 7, now + timedelta(days=1)
+        )
+        self.assertEqual([deal.app_id for deal in second], [5, 6, 7, 8])
+        self.storage.mark_deals_shown(second, now + timedelta(days=1))
+        third = self.storage.select_deals(
+            deals, 4, 7, now + timedelta(days=2)
+        )
+        # All candidates were shown within the cooldown; least recent fill in.
+        self.assertEqual(len(third), 4)
+        self.assertEqual(
+            [deal.app_id for deal in third], [1, 2, 3, 4]
+        )
 
     def test_source_health(self):
         self.storage.record_source_health(

@@ -304,6 +304,7 @@ class PluginConfig:
     send_caption: bool = True
     send_text_fallback: bool = True
     dedupe_retention_days: int = 30
+    steam_deal_cooldown_days: int = 7
     tz: ZoneInfo = field(default_factory=lambda: ZoneInfo(DEFAULT_TIMEZONE))
     ai_key_source: str = ""
     warnings: list[str] = field(default_factory=list)
@@ -479,6 +480,9 @@ class PluginConfig:
             dedupe_retention_days=_as_int(
                 get("dedupe_retention_days"), 30, 1, 3650
             ),
+            steam_deal_cooldown_days=_as_int(
+                get("steam_deal_cooldown_days"), 7, 1, 30
+            ),
             tz=tz,
             ai_key_source=ai_key_source,
             warnings=warnings,
@@ -555,6 +559,7 @@ class PluginConfig:
             "poster": f"{self.poster_width}x{self.poster_height}",
             "theme": self.poster_theme,
             "output_dir": str(self.output_dir),
+            "steam_deal_cooldown_days": self.steam_deal_cooldown_days,
             "rss_extra": len(self.rss_sources),
             "disabled_sources": list(self.disabled_sources),
             "warnings": list(self.warnings),

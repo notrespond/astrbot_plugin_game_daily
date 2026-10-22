@@ -247,6 +247,24 @@ class SteamDeal:
     currency: str = "CNY"
     image_url: str = ""
     genres: list[str] = field(default_factory=list)
+    review_positive: int = 0
+    review_negative: int = 0
+    review_total: int = 0
+    review_score: int = 0
+    review_desc: str = ""
+    metacritic: int | None = None
+    recommendations: int = 0
+
+    @property
+    def positive_ratio(self) -> float:
+        positive = max(0, int(self.review_positive))
+        negative = max(0, int(self.review_negative))
+        total = positive + negative
+        return positive / total if total > 0 else 0.0
+
+    @property
+    def best_review_count(self) -> int:
+        return max(int(self.review_total), int(self.recommendations))
 
     @property
     def original_price_text(self) -> str:
