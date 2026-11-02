@@ -31,7 +31,7 @@ from .poster import PosterError, PosterRenderer
 from .scheduler import DailyScheduler, format_next_run
 from .storage import Storage
 
-PLUGIN_VERSION = "1.0.0"
+PLUGIN_VERSION = "1.0.1"
 
 
 def _resolve_data_dir() -> Path:

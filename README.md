@@ -523,6 +523,7 @@ python astrbot_plugin_game_daily/tests/manual_smoke.py
 
 ## 14. 版本
 
+- `v1.0.1`：统一使用 AstrBot logger，修复上架审核的日志记录问题。
 - `v1.0.0`：首个完整版本。RSS/Steam 采集、AI/规则摘要、SQLite 去重、Pillow 海报、AstrBot cron 定时推送、命令与自检、单元测试。
 
 ## 15. 许可与来源
