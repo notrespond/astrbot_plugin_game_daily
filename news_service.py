@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import re
 import uuid
 from contextlib import asynccontextmanager
@@ -11,6 +10,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from typing import AsyncIterator
+
+from astrbot.api import logger
 
 from .ai_service import AIEnhanceResult, AIService
 from .config import DEFAULT_CATEGORIES, PluginConfig
@@ -24,8 +25,6 @@ from .models import (
 from .news_sources import NewsFetcher, build_sources, fetch_result_reports
 from .poster import PosterError, PosterRenderer
 from .storage import Storage
-
-log = logging.getLogger(__name__)
 
 
 class RunBusyError(RuntimeError):
@@ -328,7 +327,7 @@ def _recency_key(item: NewsItem, now: datetime) -> float:
 
 
 def _dedupe_items(
-    items: list[NewsItem], now: datetime, logger: logging.Logger
+    items: list[NewsItem], now: datetime, log
 ) -> tuple[list[NewsItem], int]:
     """Exact-key and near-title de-duplication, merging sources."""
 
@@ -380,7 +379,7 @@ def _dedupe_items(
         if title_key:
             by_title[title_key] = item
         by_content[content_key] = item
-    logger.debug("批次内去重：%s -> %s", len(items), len(kept))
+    log.debug("批次内去重：%s -> %s", len(items), len(kept))
     return kept, dropped
 
 
@@ -494,7 +493,7 @@ class DailyReportService:
         fetcher: NewsFetcher,
         ai: AIService,
         poster: PosterRenderer,
-        logger=None,
+        log=None,
         clock=None,
         deals_fetcher=None,
     ) -> None:
@@ -504,7 +503,7 @@ class DailyReportService:
         self.ai = ai
         self.poster = poster
         self.deals_fetcher = deals_fetcher
-        self.log = logger or log
+        self.log = log or logger
         self._clock = clock or (lambda: datetime.now(config.timezone))
 
     def _now(self) -> datetime:

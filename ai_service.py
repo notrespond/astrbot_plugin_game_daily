@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -17,10 +16,10 @@ from typing import Any
 
 import aiohttp
 
+from astrbot.api import logger
+
 from .config import PluginConfig
 from .models import NewsItem
-
-log = logging.getLogger(__name__)
 
 
 class AIError(RuntimeError):
@@ -129,9 +128,9 @@ def _as_duplicate(value: Any) -> int | None:
 
 
 class AIService:
-    def __init__(self, config: PluginConfig, logger=None) -> None:
+    def __init__(self, config: PluginConfig, log=None) -> None:
         self.config = config
-        self.log = logger or log
+        self.log = log or logger
         self.last_error = ""
         self._provider_chat = None
 
@@ -139,8 +138,8 @@ class AIService:
         """Use AstrBot's configured model when no external API key exists.
 
         ``callback`` is an async callable receiving ``messages`` and returning
-        the assistant text.  It is supplied by ``main.py`` so this module stays
-        independent of AstrBot imports.
+        the assistant text.  It is supplied by ``main.py`` so this module does
+        not depend on AstrBot's provider internals.
         """
 
         self._provider_chat = callback

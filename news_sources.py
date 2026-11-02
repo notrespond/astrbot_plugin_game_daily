@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 import html
 import json
-import logging
 import math
 import re
 from dataclasses import dataclass, field
@@ -23,10 +22,10 @@ from xml.etree import ElementTree as ET
 
 import aiohttp
 
+from astrbot.api import logger
+
 from .config import PluginConfig
 from .models import NewsItem, SteamDeal, normalize_url, utcnow
-
-log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -649,9 +648,9 @@ class RequestPacer:
 
 
 class NewsFetcher:
-    def __init__(self, config: PluginConfig, logger=None) -> None:
+    def __init__(self, config: PluginConfig, log=None) -> None:
         self.config = config
-        self.log = logger or log
+        self.log = log or logger
         self.pacer = RequestPacer(config.request_interval)
 
     async def fetch(
@@ -882,9 +881,9 @@ class SteamDealFetcher:
     FEATURED_URL = "https://store.steampowered.com/api/featuredcategories"
     DETAILS_URL = "https://store.steampowered.com/api/appdetails"
 
-    def __init__(self, config: PluginConfig, logger=None) -> None:
+    def __init__(self, config: PluginConfig, log=None) -> None:
         self.config = config
-        self.log = logger or log
+        self.log = log or logger
 
     async def fetch(self, limit: int = 4) -> list[SteamDeal]:
         timeout = aiohttp.ClientTimeout(

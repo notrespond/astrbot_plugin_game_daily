@@ -15,16 +15,15 @@ Manual commands do not create jobs; they call the same report service directly.
 from __future__ import annotations
 
 import asyncio
-import logging
 import uuid
 from datetime import datetime
 from typing import Awaitable, Callable
 
+from astrbot.api import logger
+
 from .config import PLUGIN_NAME, PluginConfig
 from .models import ReportResult
 from .storage import Storage
-
-log = logging.getLogger(__name__)
 
 JOB_PREFIX = "[GameDaily]"
 JOB_NAME_PREPARE = "[GameDaily] 预生成游戏日报"
@@ -43,14 +42,14 @@ class DailyScheduler:
         storage: Storage,
         prepare_callback: Callable[[], Awaitable[ReportResult | None]],
         send_callback: Callable[[], Awaitable[ReportResult | None]],
-        logger=None,
+        log=None,
     ) -> None:
         self.cron_manager = cron_manager
         self.config = config
         self.storage = storage
         self.prepare_callback = prepare_callback
         self.send_callback = send_callback
-        self.log = logger or log
+        self.log = log or logger
         self._prepare_job_id: str | None = None
         self._send_job_id: str | None = None
         self._started = False

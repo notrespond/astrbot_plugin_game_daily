@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import hashlib
 import io
-import logging
 import os
 import re
 import shutil
@@ -27,10 +26,10 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
+from astrbot.api import logger
+
 from .config import PluginConfig
 from .models import NewsItem, ReportStats, SteamDeal
-
-log = logging.getLogger(__name__)
 
 _EMOJI_RE = re.compile(
     "[\U0001f000-\U0001faff\U00002600-\U000027bf\U0001f1e6-\U0001f1ff"
@@ -182,8 +181,8 @@ def _fc_match(pattern: str) -> str | None:
 class FontBook:
     """Discovers a regular/bold CJK font pair and caches sized fonts."""
 
-    def __init__(self, configured_path: str = "", logger=None) -> None:
-        self.log = logger or log
+    def __init__(self, configured_path: str = "", log=None) -> None:
+        self.log = log or logger
         self._lock = threading.RLock()
         self._cache: dict[tuple[int, bool], ImageFont.FreeTypeFont] = {}
         self._regular_path, self._bold_path, self._index = self._discover(
@@ -512,9 +511,9 @@ def _draw_text_cover(
 
 
 class PosterRenderer:
-    def __init__(self, config: PluginConfig, logger=None) -> None:
+    def __init__(self, config: PluginConfig, log=None) -> None:
         self.config = config
-        self.log = logger or log
+        self.log = log or logger
         self._font_book: FontBook | None = None
         self._lock = threading.RLock()
         self._image_cache: dict[str, Image.Image | None] = {}

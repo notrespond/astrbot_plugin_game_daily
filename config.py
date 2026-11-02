@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import logging
 import os
 import re
 from dataclasses import dataclass, field
@@ -17,6 +16,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
+
+from astrbot.api import logger
 
 PLUGIN_NAME = "astrbot_plugin_game_daily"
 DEFAULT_TIMEZONE = "Asia/Shanghai"
@@ -164,10 +165,8 @@ def _parse_one_rss_entry(entry: Any) -> dict | None:
     return None
 
 
-def parse_rss_sources(
-    raw: Any, logger: logging.Logger | None = None
-) -> list[RSSSourceConfig]:
-    log = logger or logging.getLogger(__name__)
+def parse_rss_sources(raw: Any, log: Any = None) -> list[RSSSourceConfig]:
+    log = log or logger
     result: list[RSSSourceConfig] = []
     seen_urls: set[str] = set()
 
@@ -230,7 +229,7 @@ def _normalize_api_base(value: str) -> str:
     return base
 
 
-def _resolve_timezone(value: str, log: logging.Logger) -> ZoneInfo:
+def _resolve_timezone(value: str, log: Any) -> ZoneInfo:
     try:
         return ZoneInfo(value)
     except Exception:
@@ -238,7 +237,7 @@ def _resolve_timezone(value: str, log: logging.Logger) -> ZoneInfo:
         return ZoneInfo(DEFAULT_TIMEZONE)
 
 
-def _parse_push_time(value: str, log: logging.Logger) -> tuple[int, int]:
+def _parse_push_time(value: str, log: Any) -> tuple[int, int]:
     match = re.fullmatch(r"\s*(\d{1,2})\s*[:：]\s*(\d{1,2})\s*", value or "")
     if not match:
         log.warning("无效推送时间 %r，已回退到 %s", value, DEFAULT_PUSH_TIME)
@@ -317,10 +316,10 @@ class PluginConfig:
         cls,
         raw: dict | Any,
         data_dir: str | Path,
-        logger: logging.Logger | None = None,
+        log: Any = None,
         env: dict[str, str] | None = None,
     ) -> "PluginConfig":
-        log = logger or logging.getLogger(__name__)
+        log = log or logger
         mapping: dict = dict(raw or {}) if hasattr(raw, "keys") else {}
         data_path = Path(data_dir).expanduser().resolve()
         data_path.mkdir(parents=True, exist_ok=True)
@@ -526,7 +525,7 @@ class PluginConfig:
                 f"Cron 表达式 {raw!r} 不是 5 段，已改为按 push_time 生成。"
             )
         hour, minute = _parse_push_time(
-            self.push_time, logging.getLogger(__name__)
+            self.push_time, logger
         )
         return f"{minute} {hour} * * *"
 
